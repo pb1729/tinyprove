@@ -1,0 +1,43 @@
+# Tinyprove
+
+A small, minimal theorem prover.
+
+[pytorch](https://pytorch.org/) : [tinygrad](https://github.com/tinygrad/tinygrad) :: [lean](https://lean-lang.org/) : **tinyprove**
+
+Get started:
+
+```
+from parser import parse
+from tinyprove import infer, check
+from axiom_defs import DEFNS
+```
+
+Parser supports parsing with a context of existing variables specified.
+
+```
+ctx = [("A", parse("Type0"))]
+identity = parse("λ x: A -> x", ctx)
+```
+
+Terms can be printed (need to pass context).
+
+```
+print(identity.str(ctx))
+```
+
+Type inference:
+
+```
+identity_ty = infer(identity, ctx)
+```
+
+DEFNS supplies some basic inductive types (`False`, `And`, `Or`, `Exists`, `Nat`), plus the classical excluded middle axiom (`.em`).
+
+```
+identity_ty = infer(identity, ctx, defns=DEFNS)
+```
+
+Since `identity` doesn't use any of these definitions, the result is the same.
+
+To see how you can prove some basic theorems, check `test.py`.
+
