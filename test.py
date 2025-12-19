@@ -41,7 +41,7 @@ test("And Implies Or",
   [("A", parse("Type0")), ("B", parse("Type0"))],
   "Π a_and_b: (And A B) => (Or A B)",
   "λ a_and_b: (And A B) ->" # introduce the assumption
-  "And.ind A B" # eliminate And
+  "And.ind.0 A B" # eliminate And
   "(λ x: (And A B) -> (Or A B))" # motive: (Or A B)
   "(λ a: A -> λ b: B -> (Or.inl A B a))" # And.in branch
   "a_and_b" # pass assumption
@@ -51,11 +51,11 @@ test("Double-Negation Elimination",
   [("A", parse("Type0"))],
   "Π nnA: (Π na: (Π a:A => False) => False) => A",
   "λ nnA: (Π na: (Π a: A => False) => False) -> " # introduce assumption of ~~A
-    "(Or.ind A (Π a: A => False)" # Or.ind for or elimination on excluded middle
+    "(Or.ind.0 A (Π a: A => False)" # Or.ind for or elimination on excluded middle
     "(λ x: (Or A (Π a: A => False)) -> A)" # motive: A
     "(λ a:A -> a)" # easy case: we already have A
     "(λ notA: (Π a: A => False) -> (" # hard case: we need to use principle of explosion
-      "False.ind" # principle of explosion using False.ind
+      "False.ind.0" # principle of explosion using False.ind
       "(λ x: False -> A)" # motive: A
       " (nnA notA)" # pass False (made by ~A -> False, ~A)
     "))"
