@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Set
+from enum import Enum
 
 
 class BetaReductionError(Exception):
@@ -78,6 +79,20 @@ class Lam(Term):
   def subst(self, j, term):
     return Lam(self.param, self.A.subst(j, term), self.body.subst(j + 1, term.shift(1)))
 
+'''
+@dataclass(frozen=True)
+class Let(Term):
+  param:str
+  val: Term
+  body: Term
+  def str(self, ctx):
+    return f"let {self.param} = {self.val.str(ctx)}; {self.body.str([(self.param, None)] + ctx)}"
+  def shift(self, shift, keep=0):
+    return Let(self.param, self.val.shift(shift, keep), self.body.shift(shift, keep + 1))
+  def subst(self, j, term):
+    return Let(self.param, self.val.subst(j, term), self.body.subst(j + 1, term.shift(1)))
+'''
+
 @dataclass(frozen=True)
 class App(Term):
   fn: Term
@@ -90,23 +105,59 @@ class App(Term):
     return App(self.fn.subst(j, term), self.arg.subst(j, term))
 
 
+# ---- Proof Environment: ----
+
+class Definitions:
+  """ An environment class that holds various kinds of definitions that are referenced by Const terms. """
+  def __init__(self):
+    self.defs = {}
+  def add(self, definition):
+    def_name = definition.name
+    if "." in def_name:
+      raise RuntimeError(f"{def_name} is not a legal definition name, as these cannot contain the `.` separator.")
+    if def_name in self.defs:
+      raise RuntimeError(f"Can't add another definition with the same name ({def_name}) as an existing one.")
+    self.defs[def_name] = definition
+  def remove(self, def_name:str):
+    if def_name not in self.defs:
+      raise RuntimeError(f"No definition named {def_name} was found.")
+    is_being_used = any(
+      def_name in definition.used
+      for definition in self.defs.values()
+    )
+    if is_being_used:
+      raise RuntimeError(f"Definition {def_name} is currently in use by other definitions in this environment.")
+    del self.defs[def_name]
+  def __getitem__(self, key:str) -> Term:
+    assert isinstance(key, str)
+    name, *rest = key.split(".")
+    return self.defs[name].get_type(rest)
+  def __contains__(self, key:str) -> bool:
+    try:
+      self[key]
+    except KeyError:
+      return False
+    else:
+      return True
+
+
 # ---- WHNF Reduction and Type-checking / Inference: ----
 
-def whnf(term:Term):
+def whnf(term:Term, defns:Definitions) -> Term:
   """ Reduce term to weak head normal form. """
   match term:
     case App(fn, arg):
-      fn = whnf(fn)
+      fn = whnf(fn, defns)
       if isinstance(fn, Lam):
-        return whnf(fn.body.subst(0, arg))
+        return whnf(fn.body.subst(0, arg), defns)
       else:
         return App(fn, arg)
     case _:
       return term
 
-def conv(t1:Term, t2:Term):
-  t1 = whnf(t1)
-  t2 = whnf(t2)
+def conv(t1:Term, t2:Term, defns:Definitions) -> bool:
+  t1 = whnf(t1, defns)
+  t2 = whnf(t2, defns)
   match t1, t2:
     case Sort(l1), Sort(l2):
       return l1 == l2
@@ -115,17 +166,15 @@ def conv(t1:Term, t2:Term):
     case Const(name1), Const(name2):
       return name1 == name2
     case App(fn1, arg1), App(fn2, arg2):
-      return conv(fn1, fn2) and conv(arg1, arg2)
+      return conv(fn1, fn2, defns) and conv(arg1, arg2, defns)
     case Pi(_, A1, B1), Pi(_, A2, B2):
-      return conv(A1, A2) and conv(B1, B2)
+      return conv(A1, A2, defns) and conv(B1, B2, defns)
     case Lam(_, A1, body1), Lam(_, A2, body2):
-      return conv(A1, A2) and conv(body1, body2)
+      return conv(A1, A2, defns) and conv(body1, body2, defns)
     case _:
       return False # mismatched shapes
 
-def infer(term, ctx, defns=None):
-  if defns is None:
-    defns = {}
+def infer(term:Term, ctx, defns:Definitions) -> Term:
   match term:
     case Sort(level):
       return Sort(level + 1)
@@ -140,70 +189,92 @@ def infer(term, ctx, defns=None):
       else:
         raise TypecheckError(f"Tried to lookup a varible with depth {depth} in context of size {len(ctx)}")
     case Pi(param, A, B):
-      A_ty = whnf(infer(A, ctx, defns))
+      A_ty = whnf(infer(A, ctx, defns), defns)
       if not isinstance(A_ty, Sort):
         raise TypecheckError(f"Expected A in Pi type {term.str(ctx)} to be a Sort, but found {A_ty.str(ctx)}.")
       ctx_B = [(param, A)] + ctx
-      B_ty = whnf(infer(B, ctx_B, defns))
+      B_ty = whnf(infer(B, ctx_B, defns), defns)
       if not isinstance(B_ty, Sort):
         raise TypecheckError(f"Expected B in Pi type {term.str(ctx)} to be a Sort, but found {B_ty.str(ctx_B)}.")
       return Sort(max(A_ty.level, B_ty.level))
     case Lam(param, A, body):
-      A_ty = whnf(infer(A, ctx, defns))
+      A_ty = whnf(infer(A, ctx, defns), defns)
       if not isinstance(A_ty, Sort):
         raise TypecheckError(f"Expected A in Lam {term.str(ctx)} to be a Sort, but found {A_ty.str(ctx)}")
       ctx_body = [(param, A)] + ctx
       body_ty = infer(body, ctx_body, defns)
       return Pi(param, A, body_ty)
     case App(fn, arg):
-      fn_ty = whnf(infer(fn, ctx, defns))
+      fn_ty = whnf(infer(fn, ctx, defns), defns)
       match fn_ty:
         case Pi(param, A, B):
           check(arg, A, ctx, defns)
           ctx_B = [(param, A)] + ctx
-          return whnf(B.subst(0, arg))
+          return whnf(B.subst(0, arg), defns)
         case _:
           raise TypecheckError(f"Expected type of fn in application {term.str(ctx)} to be a Pi type, but found {fn_ty.str(ctx)}.")
     case _:
       raise TypecheckError(f"Failed to recognize term {term}")
 
-def check(term, expected, ctx, defns=None):
-  if defns is None:
-    defns = {}
+def check(term, expected, ctx, defns:Definitions):
   term_ty = infer(term, ctx, defns)
-  if not conv(term_ty, expected):
+  if not conv(term_ty, expected, defns):
     raise TypecheckError(f"Expected term {term.str(ctx)} to have type {expected.str(ctx)} but found {term_ty.str(ctx)}.")
 
 
 
-class AxiomsDef:
-  def __init__(self, axioms:Dict[str, Term]):
+# ---- Definition Classes: ----
+
+def find_used_defs(*terms:Tuple[Term]) -> Set[str]:
+  terms = list(terms)
+  ans = set()
+  i = 0 # do a BFS of the Term tree
+  while i < len(terms):
+    term_i = terms[i]
+    match term_i:
+      case Pi(param, A, B):
+        terms.append(A)
+        terms.append(B)
+      case Lam(param, A, body):
+        terms.append(A)
+        terms.append(body)
+      case App(fn, arg):
+        terms.append(fn)
+        terms.append(arg)
+      case Const(name): # if it's a Const, it uses other definitions!
+        ans.add(name.split(".")[0])
+    i += 1
+  return ans
+
+class AxiomDefinition:
+  def __init__(self, name:str, axioms:Dict[str, Term], defns:Definitions):
+    self.name = name
     self.axioms = axioms
-  def query(self, key:List[str]) -> Term:
+    axiom_terms = []
+    for axiom_name in self.axioms:
+      axiom = self.axioms[axiom_name]
+      axiom_ty = whnf(infer(axiom, [], defns), defns)
+      if not isinstance(axiom_ty, Sort):
+        raise TypecheckError(f"Expected type of axiom {self.name}.{axiom_name} to be a Sort.")
+      axiom_terms.append(axiom)
+    self.used = find_used_defs(*axiom_terms)
+  def get_type(self, key:List[str]) -> Term:
     match key:
       case [axiom_name]:
         if axiom_name in self.axioms:
           return self.axioms[axiom_name]
-    raise IndexError(f"AxiomsDef couldn't find key {'.'.join(key)}.")
+    raise IndexError(f"Couldn't find key {self.name}.{'.'.join(key)}.")
 
-class Definitions:
-  def __init__(self):
-    self.defns = {}
-  def __setitem__(self, name:str, defn):
-    assert isinstance(name, str)
-    assert "." not in name, "Definition names can't contain the '.' separator!"
-    assert name not in self.defns, f"Can't overwrite existing definition {key}."
-    self.defns[name] = defn
-  def __getitem__(self, key:str) -> Term:
-    assert isinstance(key, str)
-    name, *rest = key.split(".")
-    return self.defns[name].query(rest)
-  def __contains__(self, key:str) -> bool:
-    try:
-      self[key]
-    except KeyError:
-      return False
-    else:
-      return True
+class ConstDefinition:
+  def __init__(self, name:str, value:Term, defns:Definitions):
+    self.name = name
+    self.value = value
+    self.type = whnf(infer(value, [], defns), defns)
+    self.used = find_used_defs(self.value)
+  def get_type(self, key:List[str]) -> Term:
+    match key:
+      case []:
+        return self.type
+    raise IndexError(f"Couldn't find key {self.name}.{'.'.join(key)}.")
 
 

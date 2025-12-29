@@ -47,6 +47,58 @@ test("And Implies Or",
   "a_and_b" # pass assumption
 )
 
+# guide to Eq.ind.0:
+#   Π A: Type0 => Π x: A =>
+#       Π @motive: (Π y: A => Π @instance: (Eq A x y) => Type0) =>
+#       Π @case_refl: (@motive x (Eq.refl A x)) =>
+#       Π y: A =>
+#       Π @instance: (Eq A x y) => (@motive y @instance)
+
+test("Function of equals are equal", [],
+  # Theorem:
+  "Π A: Type0 => Π B: Type0 => Π f: (Π a:A => B) => "
+  "Π a1: A => Π a2: A => "
+  "Π a1_eq_a2: (Eq A a1 a2) => "
+  "(Eq B (f a1) (f a2))",
+  # Proof
+  "λ A: Type0 -> λ B: Type0 -> λ f: (Π a:A => B) -> "
+  "λ a1: A -> λ a2:A -> "
+  "λ a1_eq_a2: (Eq A a1 a2) -> "
+  "(Eq.ind.0 A a1 " # use equality induction
+    "(λ a1_idx: A -> λ instance: (Eq A a1 a1_idx) -> (Eq B (f a1) (f a1_idx))) " # motive
+    "(Eq.refl B (f a1)) " # case refl
+    "a2 "
+    "a1_eq_a2 " # apply hypothesis
+  ")"
+  )
+
+test("Equality is symmetric", [],
+  # Theorem:
+  "Π A: Type0 => Π x: A => Π y: A => Π x_eq_y: (Eq A x y) => (Eq A y x)",
+  # Proof:
+  "λ A: Type0 -> λ x: A -> λ y: A -> " # introduce background vars
+  "λ x_eq_y: (Eq A x y) -> " # introduce the assumption
+  "(Eq.ind.0 A x " # use equality induction
+    "(λ x_idx: A -> λ instance: (Eq A x x_idx) -> (Eq A x_idx x)) " # motive
+    "(Eq.refl A x) " # case refl
+    "y "
+    "x_eq_y)" # pass hypothesis
+  )
+
+test("Equality is transitive", [],
+  # Theorem:
+  "Π A: Type0 => Π x: A => Π y: A => Π z: A => Π x_eq_y: (Eq A x y) => Π y_eq_z: (Eq A y z) => (Eq A x z)",
+  # Proof:
+  "λ A: Type0 -> λ x: A -> λ y: A -> λ z: A -> " # introduce background vars
+  "λ x_eq_y: (Eq A x y) -> λ y_eq_z: (Eq A y z) -> " # introduce assumptions
+  "((Eq.ind.0 A x " # use equality induction on x_eq_y
+    "(λ y_idx: A -> λ instance: (Eq A x y_idx) -> (Π z_idx: A => Π y_eq_z_idx: (Eq A y_idx z_idx) => (Eq A x z_idx))) " # motive
+    "(λ z_idx: A -> λ x_eq_z_idx: (Eq A x z_idx) -> x_eq_z_idx) " # case refl
+    "y "
+    "x_eq_y) "
+  "z y_eq_z)" # apply to z and y_eq_z
+  )
+
 test("Double-Negation Elimination",
   [("A", parse("Type0"))],
   "Π nnA: (Π na: (Π a:A => False) => False) => A",
