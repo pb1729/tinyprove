@@ -45,6 +45,8 @@ class DefsExtend:
     return self.base_defns[key]
   def __contains__(self, key:str) -> bool:
     return key in self.new_defs_dict or key in self.base_defns
+  def match_reduce(self, key:str, argchain: List[Term]) -> Tuple[Term, List[Term]] | None:
+    return self.base_defns.match_reduce(key, argchain)
 
 
 def typecheck_args(args:List[Tuple[str, IrNode]], ctx:List[Tuple[str, Term]], selfref_ir:IrNode, defns:Definitions):
@@ -104,7 +106,6 @@ def selfref_sub(node:IrNode, selfref_ir:IrNode) -> IrNode:
       return IrConst(name)
     case IrInductiveSelfRef(index_vals):
       return app_wrap(selfref_ir, index_vals)
-
     case _:
       raise DefinitionError("Unknown node type.")
 
@@ -255,7 +256,8 @@ class InductiveDef:
       case []:
         return self.ty
     raise IndexError("InductiveDef couldn't find key {'.'.join(key)}.")
-
+  def match_reduce(self, key:List[str], argchain: List[Term]) -> Tuple[Term, List[Term]] | None:
+    return None # TODO: this should be changed to implement iota reduction!
 
 
 

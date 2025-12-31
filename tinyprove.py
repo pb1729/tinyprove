@@ -139,21 +139,56 @@ class Definitions:
       return False
     else:
       return True
+  def match_reduce(self, key:str, argchain: List[Term]) -> Tuple[Term, List[Term]] | None:
+    name, *rest = key.split(".")
+    return self.defs[name].match_reduce(rest, argchain)
 
 
 # ---- WHNF Reduction and Type-checking / Inference: ----
 
-def whnf(term:Term, defns:Definitions) -> Term:
-  """ Reduce term to weak head normal form. """
+def to_app_list(term:Term) -> Tuple[Term, List[Term]]:
   match term:
     case App(fn, arg):
-      fn = whnf(fn, defns)
-      if isinstance(fn, Lam):
-        return whnf(fn.body.subst(0, arg), defns)
+      head, args = to_app_list(fn)
+      args.append(arg)
+      return head, args
+    case other:
+      return other, []
+
+def argchain_whnf(head:Term, args:List[Term], defns:Definitions) -> Tuple[Term, List[Term]]:
+  """ Workhorse function of whnf reduction. Terms are represented as a non-App head and a list of args.
+      beta reduction is built-in, and defns can supply other reductions through .match_reduce() """
+  # make head not an App by adding arguments to args
+  head, new_args = to_app_list(head)
+  args = new_args + args
+  # reduce if we can, otherwise return
+  match head:
+    case Lam(param, A, body):
+      if len(args) >= 1: # lambdas can be reduced if there is an arg to apply them to
+        head = body.subst(0, args[0])
+        args = args[1:] # first argument was used up
       else:
-        return App(fn, arg)
-    case _:
-      return term
+        return head, args
+    case Const(name):
+      subst = defns.match_reduce(name, args)
+      if subst is None: # no reduction supplied
+        return head, args
+      else:
+        head, args = subst # we use the reduction supplied by defns
+    case _: # nothing else can be reduced
+      return head, args
+  # we've done a reduction so head could be an App now
+  return argchain_whnf(head, args, defns) # recursive call
+
+def whnf(term:Term, defns:Definitions) -> Term:
+  """ Reduce term to weak head normal form. """
+  head, args = argchain_whnf(term, [], defns)
+  ans = head
+  while len(args) > 0:
+    ans = App(ans, args[0])
+    args = args[1:]
+  return ans
+
 
 def conv(t1:Term, t2:Term, defns:Definitions) -> bool:
   t1 = whnf(t1, defns)
@@ -264,6 +299,8 @@ class AxiomDefinition:
         if axiom_name in self.axioms:
           return self.axioms[axiom_name]
     raise IndexError(f"Couldn't find key {self.name}.{'.'.join(key)}.")
+  def match_reduce(self, key:List[str], argchain: List[Term]) -> Tuple[Term, List[Term]] | None:
+    return None
 
 class ConstDefinition:
   def __init__(self, name:str, value:Term, defns:Definitions):
@@ -275,6 +312,11 @@ class ConstDefinition:
     match key:
       case []:
         return self.type
+    raise IndexError(f"Couldn't find key {self.name}.{'.'.join(key)}.")
+  def match_reduce(self, key:List[str], argchain: List[Term]) -> Tuple[Term, List[Term]] | None:
+    match key:
+      case []:
+        return self.value, argchain
     raise IndexError(f"Couldn't find key {self.name}.{'.'.join(key)}.")
 
 

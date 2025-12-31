@@ -1,46 +1,38 @@
 from parser import parse
-from tinyprove import check
+from tinyprove import check, ConstDefinition
 from axiom_defs import DEFNS
 
 
-def test(name, ctx, thm_str, proof_str):
+def test(name, thm_str, proof_str):
   print(f"\n\ntesting ??? {name} ???")
-  print("  context:")
-  for i, (nm, ty) in enumerate(ctx[::-1]):
-    print(f"    {nm}   \t{ty.str(ctx[-(i + 1):])}")
-  thm = parse(thm_str, ctx)
-  print(f"\n  theorem:\n    {thm.str(ctx)}")
-  proof = parse(proof_str, ctx)
-  print(f"\n  proof:\n    {proof.str(ctx)}")
-  check(proof, thm, ctx, DEFNS)
+  thm = parse(thm_str)
+  print(f"\n  theorem:\n    {thm.str([])}")
+  proof = parse(proof_str)
+  print(f"\n  proof:\n    {proof.str([])}")
+  check(proof, thm, [], DEFNS)
   print(f"\n✓ {name} type-checks\n")
 
 
 test("Identity Lemma",
-  [("A", parse("Type0"))],
-  "Π x: A => A",
-  "λ x: A -> x")
+  "Π A: Type0 => Π x: A => A",
+  "λ A: Type0 -> λ x: A -> x")
 
 
 test("Modus Ponens",
-  [("A", parse("Type0")), ("B", parse("Type0"))],
-  "Π a: A => Π a_to_b: (Π ai:A => B) => B",
-  "λ a: A -> λ a_to_b: (Π ai:A => B) -> (a_to_b a)")
+  "Π A: Type0 => Π B: Type0 => Π a: A => Π a_to_b: (Π ai:A => B) => B",
+  "λ A: Type0 -> λ B: Type0 -> λ a: A -> λ a_to_b: (Π ai:A => B) -> (a_to_b a)")
 
 test("Or Left",
-  [("A", parse("Type0")), ("B", parse("Type0"))],
-  "Π a: A => (Or A B)",
-  "λ a: A -> (Or.inl A B a)")
+  "Π A: Type0 => Π B: Type0 => Π a: A => (Or A B)",
+  "λ A: Type0 -> λ B: Type0 -> λ a: A -> (Or.inl A B a)")
 
 test("Or Right",
-  [("A", parse("Type0")), ("B", parse("Type0"))],
-  "Π b: B => (Or A B)",
-  "λ b: B -> (Or.inr A B b)")
+  "Π A: Type0 => Π B: Type0 => Π b: B => (Or A B)",
+  "λ A: Type0 -> λ B: Type0 -> λ b: B -> (Or.inr A B b)")
 
 test("And Implies Or",
-  [("A", parse("Type0")), ("B", parse("Type0"))],
-  "Π a_and_b: (And A B) => (Or A B)",
-  "λ a_and_b: (And A B) ->" # introduce the assumption
+  "Π A: Type0 => Π B: Type0 =>Π a_and_b: (And A B) => (Or A B)",
+  "λ A: Type0 -> λ B: Type0 -> λ a_and_b: (And A B) ->" # introduce the assumption
   "And.ind.0 A B" # eliminate And
   "(λ x: (And A B) -> (Or A B))" # motive: (Or A B)
   "(λ a: A -> λ b: B -> (Or.inl A B a))" # And.in branch
@@ -54,7 +46,7 @@ test("And Implies Or",
 #       Π y: A =>
 #       Π @instance: (Eq A x y) => (@motive y @instance)
 
-test("Function of equals are equal", [],
+test("Function of equals are equal",
   # Theorem:
   "Π A: Type0 => Π B: Type0 => Π f: (Π a:A => B) => "
   "Π a1: A => Π a2: A => "
@@ -72,7 +64,7 @@ test("Function of equals are equal", [],
   ")"
   )
 
-test("Equality is symmetric", [],
+test("Equality is symmetric",
   # Theorem:
   "Π A: Type0 => Π x: A => Π y: A => Π x_eq_y: (Eq A x y) => (Eq A y x)",
   # Proof:
@@ -85,7 +77,7 @@ test("Equality is symmetric", [],
     "x_eq_y)" # pass hypothesis
   )
 
-test("Equality is transitive", [],
+test("Equality is transitive",
   # Theorem:
   "Π A: Type0 => Π x: A => Π y: A => Π z: A => Π x_eq_y: (Eq A x y) => Π y_eq_z: (Eq A y z) => (Eq A x z)",
   # Proof:
@@ -100,8 +92,8 @@ test("Equality is transitive", [],
   )
 
 test("Double-Negation Elimination",
-  [("A", parse("Type0"))],
-  "Π nnA: (Π na: (Π a:A => False) => False) => A",
+  "Π A: Type0 => Π nnA: (Π na: (Π a:A => False) => False) => A",
+  "λ A: Type0 -> " # A is a type
   "λ nnA: (Π na: (Π a: A => False) => False) -> " # introduce assumption of ~~A
     "(Or.ind.0 A (Π a: A => False)" # Or.ind for or elimination on excluded middle
     "(λ x: (Or A (Π a: A => False)) -> A)" # motive: A
@@ -114,4 +106,17 @@ test("Double-Negation Elimination",
     "(.em A))" # pass .em axiom (excluded middle)
 )
 
+
+# define addition
+DEFNS.add(ConstDefinition("add",
+  parse("λ a: Nat -> λ b: Nat -> (Nat.ind.0 (λ _: Nat -> Nat) b (λ n: Nat -> λ r: Nat -> (Nat.S r)) a)"),
+  DEFNS))
+
+DEFNS.add(ConstDefinition("id_Nat",
+  parse("λ n: Nat -> n"),
+  DEFNS))
+
+test("id_Nat equals its input (delta-reduction required)",
+  "Π n: Nat => (Eq Nat (id_Nat n) n)",
+  "λ n: Nat -> (Eq.refl Nat n)")
 
