@@ -45,8 +45,8 @@ class DefsExtend:
     return self.base_defns[key]
   def __contains__(self, key:str) -> bool:
     return key in self.new_defs_dict or key in self.base_defns
-  def match_reduce(self, key:str, argchain: List[Term]) -> Tuple[Term, List[Term]] | None:
-    return self.base_defns.match_reduce(key, argchain)
+  def match_reduce(self, key:str, argchain: List[Term], defns:Definitions) -> Tuple[Term, List[Term]] | None:
+    return self.base_defns.match_reduce(key, argchain, defns)
 
 
 def typecheck_args(args:List[Tuple[str, IrNode]], ctx:List[Tuple[str, Term]], selfref_ir:IrNode, defns:Definitions):
@@ -73,7 +73,8 @@ class InductiveDefHead:
     self.ty_ir = self._get_ty()
     self.selfref_ir = self._get_selfref_ir()
     # type checking:
-    typecheck_args(self.params + self.indices, [], self.selfref_ir, self.defns)
+    self.params_ctx = typecheck_args(self.params, [], self.selfref_ir, self.defns)
+    self.inds_ctx = typecheck_args(self.indices, self.params_ctx, self.selfref_ir, self.defns)
     self.ty = self.ty_ir.to_term([])
     self.defns_ext = DefsExtend(self.defns, {self.name: self.ty})
   def _get_ty(self):
@@ -143,11 +144,12 @@ class ConstructorDef:
     self.args = args
     self.output_indices = output_indices
     # type & positivity checking:
-    params_ctx = typecheck_args(self.head.params, [], self.head.selfref_ir, self.head.defns)
-    inds_ctx = typecheck_args(self.head.indices, params_ctx, self.head.selfref_ir, self.head.defns)
-    constructor_ctx = typecheck_args(self.args, params_ctx, self.head.selfref_ir, self.head.defns_ext)
+    constructor_ctx = typecheck_args(self.args, self.head.params_ctx, self.head.selfref_ir, self.head.defns_ext)
     self.check_positive()
-    self.check_output_indices(constructor_ctx, inds_ctx)
+    self.check_output_indices(constructor_ctx, self.head.inds_ctx)
+    # prep data that will be used by match-reduce
+    self.matchred_sig = self.get_matchred_sig()
+    self.arg_tys = [arg_ty for _, arg_ty in constructor_ctx[:len(self.args)]]
   def get_ty(self):
     return pi_wrap(
       pi_wrap(
@@ -190,6 +192,22 @@ class ConstructorDef:
       target_nm, target_ty = inds_ctx[num_inds - 1 - i]
       if not conv(output_index_ty, target_ty, self.head.defns):
         raise TypecheckError(f"Constructor {self.name} output index {target_nm} has the wrong type.")
+  def get_matchred_sig(self):
+    ans = []
+    for i, (_, arg_ty) in enumerate(self.args):
+      if isinstance(arg_ty, IrInductiveSelfRef):
+        arg_names = [arg_nm for arg_nm, _ in reversed(self.head.params + self.args[:i])] # reverse to make a ctx
+        ans.append([index_val.to_term(arg_names) for index_val in arg_ty.index_vals])
+      else:
+        ans.append(None)
+    return ans
+
+
+def subst_args_as_term_ctx(t:Term, args:List[Term]):
+  for i, arg in enumerate(args):
+    depth = len(args) - i - 1
+    t = t.subst(depth, arg)
+  return t
 
 
 class InductiveDef:
@@ -197,6 +215,7 @@ class InductiveDef:
     assert names_unique([constructor.name for constructor in constructors]), "Constructor names duplicate with each other."
     self.head = head
     self.constructors = constructors
+    self.constructors_dict = {f"{self.name}.{self.constructors[i].name}": i for i in range(len(self.constructors))}
     # dicts containing Term types:
     self.constructor_tys = {
       constructor.name: selfref_sub(constructor.get_ty(), self.head.selfref_ir).to_term([])
@@ -256,8 +275,54 @@ class InductiveDef:
       case []:
         return self.ty
     raise IndexError("InductiveDef couldn't find key {'.'.join(key)}.")
-  def match_reduce(self, key:List[str], argchain: List[Term]) -> Tuple[Term, List[Term]] | None:
-    return None # TODO: this should be changed to implement iota reduction!
+  def match_reduce(self, key:List[str], argchain: List[Term], defns:Definitions) -> Tuple[Term, List[Term]] | None:
+    match key:
+      case ["ind", sortnum]:
+        sortnum = to_positive_int(sortnum)
+        assert sortnum is not None, f"<n> should be a positive integer in {self.name}.ind.<n>"
+        n_params = len(self.head.params)
+        n_constructors = len(self.constructors)
+        n_indices = len(self.head.indices)
+        if len(argchain) < (n_params + 1 + n_constructors + n_indices + 1):
+          return None # too few args
+        # get induction arguments
+        params, argchain = argchain[:n_params], argchain[n_params:]
+        motive, argchain = argchain[0], argchain[1:]
+        cases, argchain = argchain[:n_constructors], argchain[n_constructors:]
+        indices, argchain = argchain[:n_indices], argchain[n_indices:]
+        scrutinee, argchain = argchain[0], argchain[1:]
+        # have to do recursive whnf on the scrutinee, just in case any redexes produce a construtor
+        scru_head, scru_args = to_app_list(scrutinee)
+        scru_head, scru_args = argchain_whnf(scru_head, scru_args, defns)
+        # second part of checking for iota reduction is checking if scrutinee is a constructor
+        match scru_head:
+          case Const(name):
+            if name not in self.constructors_dict: return None # not a constructor for this type
+            cons_idx = self.constructors_dict[name]
+            constructor = self.constructors[cons_idx]
+            if len(scru_args) != n_params + len(constructor.matchred_sig):
+              return None # too few or too many args
+            case_fn_args = []
+            for i, (scru_arg, rec_indices) in enumerate(zip(scru_args[n_params:], constructor.matchred_sig)):
+              case_fn_args.append(scru_arg)
+              if rec_indices is not None:
+                recursive_call = Const(f"{self.name}.ind.{sortnum}")
+                for param in params:
+                  recursive_call = App(recursive_call, param)
+                recursive_call = App(recursive_call, motive)
+                for case_fn in cases:
+                  recursive_call = App(recursive_call, case_fn)
+                for idx_expr in rec_indices:
+                  idx_val = subst_args_as_term_ctx(idx_expr, scru_args[:n_params + i])
+                  recursive_call = App(recursive_call, idx_val)
+                recursive_call = App(recursive_call, scru_arg)
+                case_fn_args.append(recursive_call)
+            case_fn = cases[cons_idx]
+            return case_fn, case_fn_args + argchain
+          case _: # not a constructor
+            return None
+      case _: # callee is not .ind
+        return None
 
 
 

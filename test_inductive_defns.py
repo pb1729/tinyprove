@@ -9,7 +9,7 @@ DEFNS.add(InductiveDef(vec_head, [
     ConstructorDef(vec_head, "append", [("l", IrConst("Nat")), ("a", IrVar("A")), ("rest", IrInductiveSelfRef([IrVar("l")]))], [IrApp(IrConst("Nat.S"), IrVar("l"))])
   ]))
 
-# TODO: define an "add" function that can be used in bintree instead of 
+
 DEFNS.add(ConstDefinition("add",
   IrLam("a", IrConst("Nat"),
         IrLam("b", IrConst("Nat"),
@@ -37,6 +37,4 @@ DEFNS.add(InductiveDef(bintree_head, [
   ]))
 
 
-# (Π n: Nat => (Π @rec_n: Nat => Nat))
-# (Π r: Nat => Nat)
 

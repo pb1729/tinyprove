@@ -139,9 +139,9 @@ class Definitions:
       return False
     else:
       return True
-  def match_reduce(self, key:str, argchain: List[Term]) -> Tuple[Term, List[Term]] | None:
+  def match_reduce(self, key:str, argchain: List[Term], defns) -> Tuple[Term, List[Term]] | None:
     name, *rest = key.split(".")
-    return self.defs[name].match_reduce(rest, argchain)
+    return self.defs[name].match_reduce(rest, argchain, defns)
 
 
 # ---- WHNF Reduction and Type-checking / Inference: ----
@@ -170,7 +170,7 @@ def argchain_whnf(head:Term, args:List[Term], defns:Definitions) -> Tuple[Term, 
       else:
         return head, args
     case Const(name):
-      subst = defns.match_reduce(name, args)
+      subst = defns.match_reduce(name, args, defns)
       if subst is None: # no reduction supplied
         return head, args
       else:
@@ -299,21 +299,21 @@ class AxiomDefinition:
         if axiom_name in self.axioms:
           return self.axioms[axiom_name]
     raise IndexError(f"Couldn't find key {self.name}.{'.'.join(key)}.")
-  def match_reduce(self, key:List[str], argchain: List[Term]) -> Tuple[Term, List[Term]] | None:
+  def match_reduce(self, key:List[str], argchain: List[Term], defns:Definitions) -> Tuple[Term, List[Term]] | None:
     return None
 
 class ConstDefinition:
   def __init__(self, name:str, value:Term, defns:Definitions):
     self.name = name
-    self.value = value
-    self.type = whnf(infer(value, [], defns), defns)
+    self.value = whnf(value, defns)
+    self.type = whnf(infer(self.value, [], defns), defns)
     self.used = find_used_defs(self.value)
   def get_type(self, key:List[str]) -> Term:
     match key:
       case []:
         return self.type
     raise IndexError(f"Couldn't find key {self.name}.{'.'.join(key)}.")
-  def match_reduce(self, key:List[str], argchain: List[Term]) -> Tuple[Term, List[Term]] | None:
+  def match_reduce(self, key:List[str], argchain: List[Term], defns:Definitions) -> Tuple[Term, List[Term]] | None:
     match key:
       case []:
         return self.value, argchain

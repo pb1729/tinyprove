@@ -24,6 +24,15 @@ def _tokenise(src: str) -> List[str]:
   return [m.group(1) for m in _token_re.finditer(src)]
 
 
+def strip_comments(src:str) -> str:
+  src = src.split("\n")
+  src = [
+    (line + "\n")[:line.find("#")]
+    for line in src
+  ]
+  return "\n".join(src)
+
+
 # Recursive‑descent parser:
 class Parser:
   def __init__(self, tokens: List[str], ctx=None):
@@ -117,6 +126,7 @@ class Parser:
 
 # Public function:
 def parse(src: str, ctx=None) -> IrNode:
+  src = strip_comments(src)
   tokens = _tokenise(src)
   src_ir = Parser(tokens, ctx=ctx).parse()
   ctx_names = [] if ctx is None else [nm for nm, _ in ctx]
