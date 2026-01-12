@@ -1,18 +1,16 @@
 from parser import parse
 from ir import *
-from tinyprove import check, ConstDefinition, whnf
-from inductive import InductiveDef, ConstructorDef, InductiveDefHead, IrInductiveSelfRef
+from tinyprove import check, AxiomDefinition, ConstDefinition, whnf
+from inductive import InductiveDef, IrConstructorDefinition, IrInductiveSelfRef
 from axiom_defs import DEFNS
 
 
 def test(name, thm_str, proof_str):
-  print(f"\n\ntesting ??? {name} ???")
   thm = parse(thm_str)
-  print(f"\n  theorem:\n    {thm.str([])}")
+  print(f"\ntheorem {name}:\n    {thm.str([])}")
   proof = parse(proof_str)
-  print(f"\n  proof:\n    {proof.str([])}")
   check(proof, thm, [], DEFNS)
-  print(f"\n✓ {name} type-checks\n")
+  print(f"    ✓ {name} type-checks\n")
 
 
 test("Identity Lemma",
@@ -34,12 +32,12 @@ test("Or Right",
 
 test("And Implies Or",
   "Π A: Type0 => Π B: Type0 =>Π a_and_b: (And A B) => (Or A B)",
-  "λ A: Type0 -> λ B: Type0 -> λ a_and_b: (And A B) ->" # introduce the assumption
-  "And.ind.0 A B" # eliminate And
-  "(λ x: (And A B) -> (Or A B))" # motive: (Or A B)
-  "(λ a: A -> λ b: B -> (Or.inl A B a))" # And.in branch
-  "a_and_b" # pass assumption
-)
+"""λ A: Type0 -> λ B: Type0 -> λ a_and_b: (And A B) -> # introduce the assumption
+    And.ind.0 A B # eliminate And
+    (λ x: (And A B) -> (Or A B)) # motive: (Or A B)
+    (λ a: A -> λ b: B -> (Or.inl A B a)) # And.in branch
+    a_and_b # pass assumption
+""")
 
 # guide to Eq.ind.0:
 #   Π A: Type0 => Π x: A =>
@@ -153,29 +151,32 @@ print(DEFNS.defs["eq_1_1"].type.str([]))
 print(DEFNS.defs["eq_2_2"].type.str([]))
 
 
-vec_head = InductiveDefHead("Vec", IrSort(0), [("A", IrSort(0))], [("len", IrConst("Nat"))], defns=DEFNS)
-DEFNS.add(InductiveDef(vec_head, [
-    ConstructorDef(vec_head, "empty", [], [IrConst("Nat.Z")]),
-    ConstructorDef(vec_head, "append", [("l", IrConst("Nat")), ("a", IrVar("A")), ("rest", IrInductiveSelfRef([IrVar("l")]))], [IrApp(IrConst("Nat.S"), IrVar("l"))])
-  ]))
+DEFNS.add(InductiveDef("Vec", IrSort(0), [("A", IrSort(0))], [("len", IrConst("Nat"))],
+  [
+    IrConstructorDefinition("empty", [], [IrConst("Nat.Z")]),
+    IrConstructorDefinition("append",
+      [("l", IrConst("Nat")), ("a", IrVar("A")), ("rest", IrInductiveSelfRef([IrVar("l")]))],
+      [IrApp(IrConst("Nat.S"), IrVar("l"))]),
+  ], DEFNS))
 
 # bullshit inductive type that is both recursive and has multiple indices for testing purposes
-blorb_head = InductiveDefHead("Blorb", IrSort(0), [], [("n", IrConst("Nat")), ("m", IrConst("Nat"))], defns=DEFNS)
-DEFNS.add(InductiveDef(blorb_head, [
-    ConstructorDef(blorb_head, "base", [], [IrConst("Nat.Z"), IrConst("Nat.Z")]),
-    ConstructorDef(blorb_head, "inl",
+DEFNS.add(InductiveDef("Blorb", IrSort(0), [], [("n", IrConst("Nat")), ("m", IrConst("Nat"))],
+  [
+    IrConstructorDefinition("base", [], [IrConst("Nat.Z"), IrConst("Nat.Z")]),
+    IrConstructorDefinition("inl",
       [("nn", IrConst("Nat")), ("mm", IrConst("Nat")), ("child", IrInductiveSelfRef([IrVar("nn"), IrVar("mm")]))],
       [IrApp(IrConst("Nat.S"), IrVar("nn")), IrVar("mm")]),
-    ConstructorDef(blorb_head, "inr",
+    IrConstructorDefinition("inr",
       [("nn", IrConst("Nat")), ("mm", IrConst("Nat")), ("child", IrInductiveSelfRef([IrVar("nn"), IrVar("mm")]))],
       [IrVar("nn"), IrApp(IrConst("Nat.S"), IrVar("mm"))]),
-  ]))
+  ], DEFNS))
 
-mat_head = InductiveDefHead("Mat", IrSort(0), [("A", IrSort(0))], [("n", IrConst("Nat")), ("m", IrConst("Nat"))], defns=DEFNS)
-DEFNS.add(InductiveDef(mat_head, [
-    ConstructorDef(mat_head, "empty", [("nn", IrConst("Nat"))], [IrVar("nn"), IrConst("Nat.Z")]),
-    ConstructorDef(mat_head, "append", [("nn", IrConst("Nat")), ("mm", IrConst("Nat")), ("row", IrApp(IrApp(IrConst("Vec"), IrVar("A")), IrVar("nn"))), ("rest", IrInductiveSelfRef([IrVar("nn"), IrVar("mm")]))], [IrVar("nn"), IrApp(IrConst("Nat.S"), IrVar("mm"))])
-  ]))
+DEFNS.add(InductiveDef("Mat", IrSort(0), [("A", IrSort(0))], [("n", IrConst("Nat")), ("m", IrConst("Nat"))],
+  [
+    IrConstructorDefinition("empty", [("nn", IrConst("Nat"))], [IrVar("nn"), IrConst("Nat.Z")]),
+    IrConstructorDefinition("append", [("nn", IrConst("Nat")), ("mm", IrConst("Nat")), ("row", IrApp(IrApp(IrConst("Vec"), IrVar("A")), IrVar("nn"))), ("rest", IrInductiveSelfRef([IrVar("nn"), IrVar("mm")]))], [IrVar("nn"), IrApp(IrConst("Nat.S"), IrVar("mm"))])
+  ], DEFNS))
+
 
 DEFNS.add(ConstDefinition("inc_vec",
   parse("""
@@ -753,5 +754,38 @@ test("add left cancellation",
 )
 """
 )
+
+
+
+# ----------------------------------
+#   Show all current definitions
+# ----------------------------------
+
+PADWIDTH:int = 24
+
+def rightpad(s:str) -> str:
+  diff = PADWIDTH - len(s)
+  assert diff >= 0
+  return s + " "*diff
+
+def show_definition(defs_obj):
+  print(f"\n    defs for {name}:")
+  print(f"    used: {', '.join(defs_obj.used)}")
+  if isinstance(defs_obj, AxiomDefinition):
+    for subname in defs_obj.axioms:
+      print(rightpad(f"{name}.{subname}"), defs_obj.get_type([subname]))
+  elif isinstance(defs_obj, ConstDefinition):
+    print(rightpad(name), defs_obj.get_type([]))
+  else:
+    print(rightpad(f"{name}"), defs_obj.get_type([]))
+    for constructor in defs_obj.constructors:
+      print(rightpad(f"{name}.{constructor.name}"), defs_obj.get_type([constructor.name]))
+    print(rightpad(f"{name}.ind.0"), defs_obj.get_type(["ind", "0"]))
+
+for name in DEFNS.defs:
+  defs_obj = DEFNS.defs[name]
+  show_definition(defs_obj)
+  
+
 
 

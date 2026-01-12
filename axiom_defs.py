@@ -1,7 +1,7 @@
 from ir import *
 from parser import parse
 from tinyprove import Definitions, AxiomDefinition
-from inductive import InductiveDef, ConstructorDef, InductiveDefHead, IrInductiveSelfRef
+from inductive import InductiveDef, IrConstructorDefinition, IrInductiveSelfRef
 
 
 DEFNS = Definitions()
@@ -9,40 +9,39 @@ DEFNS = Definitions()
 
 # Constructive:
 
-false_head = InductiveDefHead("False", IrSort(0), [], [])
-DEFNS.add(InductiveDef(false_head, []))
+DEFNS.add(InductiveDef("False", IrSort(0), [], [], [], DEFNS))
 
-unit_head = InductiveDefHead("Unit", IrSort(0), [], [])
-DEFNS.add(InductiveDef(unit_head, [
-    ConstructorDef(unit_head, "in", [], [])
-  ]))
+DEFNS.add(InductiveDef("Unit", IrSort(0), [], [],
+  [
+    IrConstructorDefinition("in", [], []),
+  ], DEFNS))
 
-and_head = InductiveDefHead("And", IrSort(0), [("A", IrSort(0)), ("B", IrSort(0))], [])
-DEFNS.add(InductiveDef(and_head, [
-    ConstructorDef(and_head, "in", [("a", IrVar("A")), ("b", IrVar("B"))], [])
-  ]))
+DEFNS.add(InductiveDef("And", IrSort(0), [("A", IrSort(0)), ("B", IrSort(0))], [],
+  [
+    IrConstructorDefinition("in", [("a", IrVar("A")), ("b", IrVar("B"))], []),
+  ], DEFNS))
 
-or_head = InductiveDefHead("Or", IrSort(0), [("A", IrSort(0)), ("B", IrSort(0))], [])
-DEFNS.add(InductiveDef(or_head, [
-    ConstructorDef(or_head, "inl", [("a", IrVar("A"))], []),
-    ConstructorDef(or_head, "inr", [("b", IrVar("B"))], []),
-  ]))
+DEFNS.add(InductiveDef("Or", IrSort(0), [("A", IrSort(0)), ("B", IrSort(0))], [],
+  [
+    IrConstructorDefinition("inl", [("a", IrVar("A"))], []),
+    IrConstructorDefinition("inr", [("b", IrVar("B"))], []),
+  ], DEFNS))
 
-eq_head = InductiveDefHead("Eq", IrSort(0), [("A", IrSort(0)), ("x", IrVar("A"))], [("y", IrVar("A"))])
-DEFNS.add(InductiveDef(eq_head, [
-    ConstructorDef(eq_head, "refl", [], [IrVar("x")])
-  ]))
+DEFNS.add(InductiveDef("Eq", IrSort(0), [("A", IrSort(0)), ("x", IrVar("A"))], [("y", IrVar("A"))],
+  [
+    IrConstructorDefinition("refl", [], [IrVar("x")]),
+  ], DEFNS))
 
-exists_head = InductiveDefHead("Exists", IrSort(0), [("A", IrSort(0)), ("P", IrPi("a", IrVar("A"), IrSort(0)))], [])
-DEFNS.add(InductiveDef(exists_head, [
-    ConstructorDef(exists_head, "in", [("a", IrVar("A")), ("pa", IrApp(IrVar("P"), IrVar("a")))], [])
-  ]))
+DEFNS.add(InductiveDef("Exists", IrSort(0), [("A", IrSort(0)), ("P", IrPi("a", IrVar("A"), IrSort(0)))], [],
+  [
+    IrConstructorDefinition("in", [("a", IrVar("A")), ("pa", IrApp(IrVar("P"), IrVar("a")))], []),
+  ], DEFNS))
 
-nat_head = InductiveDefHead("Nat", IrSort(0), [], [])
-DEFNS.add(InductiveDef(nat_head, [
-    ConstructorDef(nat_head, "Z", [], []),
-    ConstructorDef(nat_head, "S", [("n", IrInductiveSelfRef([]))], [])
-  ]))
+DEFNS.add(InductiveDef("Nat", IrSort(0), [], [],
+  [
+    IrConstructorDefinition("Z", [], []),
+    IrConstructorDefinition("S", [("n", IrInductiveSelfRef([]))], []),
+  ], DEFNS))
 
 
 # Non-constructive:
