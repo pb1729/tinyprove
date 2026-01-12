@@ -1,8 +1,7 @@
-from parser import parse
-from ir import *
-from tinyprove import check, AxiomDefinition, ConstDefinition, whnf
-from inductive import InductiveDef, IrConstructorDefinition, IrInductiveSelfRef
-from axiom_defs import DEFNS
+from tinyprove import *
+
+
+DEFNS = get_usual_axioms()
 
 
 def test(name, thm_str, proof_str):

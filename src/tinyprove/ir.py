@@ -1,6 +1,6 @@
 from typing import List, Dict, Tuple
 
-from tinyprove import *
+from .core import *
 
 
 """

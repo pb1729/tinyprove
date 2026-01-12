@@ -3,8 +3,6 @@ from typing import List, Dict, Tuple, Set
 from enum import Enum
 
 
-class BetaReductionError(Exception):
-  pass
 
 class TypecheckError(Exception):
   pass

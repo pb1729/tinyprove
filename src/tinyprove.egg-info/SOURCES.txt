@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+src/tinyprove/__init__.py
+src/tinyprove/axiom_defs.py
+src/tinyprove/core.py
+src/tinyprove/inductive.py
+src/tinyprove/ir.py
+src/tinyprove/parser.py
+src/tinyprove.egg-info/PKG-INFO
+src/tinyprove.egg-info/SOURCES.txt
+src/tinyprove.egg-info/dependency_links.txt
+src/tinyprove.egg-info/top_level.txt
+test/test.py

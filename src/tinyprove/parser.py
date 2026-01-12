@@ -1,7 +1,8 @@
 import re
 from typing import List, Tuple
 
-from ir import IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrApp, to_positive_int
+from .ir import IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrApp, to_positive_int
+from .core import Term
 
 
 # Tokeniser:
@@ -124,29 +125,17 @@ class Parser:
     raise SyntaxError(f"unexpected token '{tok}'")
 
 
-# Public function:
-def parse(src: str, ctx=None) -> IrNode:
+# Parsing functions:
+
+def parse_ir(src: str, ctx=None) -> IrNode:
   src = strip_comments(src)
   tokens = _tokenise(src)
-  src_ir = Parser(tokens, ctx=ctx).parse()
+  return Parser(tokens, ctx=ctx).parse()
+
+def parse(src: str, ctx=None) -> Term:
+  ans_ir = parse_ir(src, ctx)
   ctx_names = [] if ctx is None else [nm for nm, _ in ctx]
-  return src_ir.to_term(ctx_names)
+  return ans_ir.to_term(ctx_names)
 
 
-
-# Manual test of our parser:
-if __name__ == "__main__":
-  examples = [
-    r"Π A:Type0=>A",
-    r"λ x:Type0->x",
-    r"λ x: Type0 -> Π y: Type0 => (Π z:x => y)",
-    r"λ x: Type0 -> (x (asdf x))",
-    r"λ x: Type0 -> λ y: x -> λ x: y -> (asdf x)", # shadowing
-  ]
-  for code in examples:
-    term = parse(code)
-    print()
-    print(code)
-    print("   ⇒   ", str(term))
-    print("   ⇒   ", repr(term))
 

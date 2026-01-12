@@ -1,8 +1,8 @@
 from __future__ import annotations
 from typing import List, Dict, Tuple
 
-from tinyprove import *
-from ir import *
+from .core import *
+from .ir import *
 
 
 class DefinitionError(Exception):
