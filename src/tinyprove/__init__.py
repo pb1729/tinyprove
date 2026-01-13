@@ -11,6 +11,7 @@ from .parser import (
   parse_ir, parse,
 )
 from .inductive import (
+  DefinitionError,
   InductiveDef, IrConstructorDefinition, IrInductiveSelfRef,
 )
 from .axiom_defs import (
