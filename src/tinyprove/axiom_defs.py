@@ -5,7 +5,7 @@ from .inductive import InductiveDef, IrConstructorDefinition, IrInductiveSelfRef
 
 
 
-def get_usual_axioms():
+def get_usual_axioms(classical:bool=True):
   ans = Definitions()
 
   # Constructive:
@@ -45,14 +45,13 @@ def get_usual_axioms():
     ], ans))
 
 
-  # Non-constructive:
-
-  ans.add(AxiomDefinition(
-    "",
-    {
-      "em": parse("Π A: Type0 => (Or A (Π a: A => False))")
-    },
-    ans))
+  if classical: # Non-constructive:
+    ans.add(AxiomDefinition(
+      "",
+      {
+        "em": parse("Π A: Type0 => (Or A (Π a: A => False))")
+      },
+      ans))
 
   return ans
 

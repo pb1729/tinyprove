@@ -210,7 +210,7 @@ You can also build up the intermediate representation yourself from scratch. Thi
 * IrLam(param_name, input\_type, body)
 * IrApp(fn, arg)
 
-These are the basic params we need to make arbitrary `Term`s, but to define inductive types we need a couple more:
+These are the kinds of `IrNode` we need to make arbitrary `Term`s, but to define inductive types we need a couple more:
 * IrInductiveSelfRef(indices)
 * IrConstructorDefinition(constructor_name, args, result\_indices)
 
@@ -352,7 +352,7 @@ check(
   [], DEFNS)
 ```
 
-As an exercise, can you prove the three standard properties (reflexivity, symmetry, transitivity) of equality by making use `Eq.ind.0`? (Hint: as you may be able to guess by the looking at the name of `Eq`'s only constructor, one of these proofs is very easy.)
+As an exercise, can you prove the three standard properties (reflexivity, symmetry, transitivity) of equality using `Eq.ind.0`? (Hint: as you may be able to guess by the looking at the name of `Eq`'s only constructor, one of these proofs is very easy.)
 
 ### Current listing of inductive types created by get_usual_axioms()
 
