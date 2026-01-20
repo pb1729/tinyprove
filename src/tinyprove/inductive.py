@@ -76,6 +76,18 @@ class IrConstructorDefinition(IrNode):
   def to_term(self, ctx_nm):
     raise RuntimeError("Can't convert IrConstructorDefinition to Term, it is intended for creating InductiveDef's only.")
 
+@dataclass(frozen=True)
+class IrInductiveDefinition(IrNode):
+  name: str
+  sort: IrSort
+  params: List[Tuple[str, IrNode]]
+  indices: List[Tuple[str, IrNode]]
+  constructors:List[IrConstructorDefinition]
+  def to_term(self, ctx_nm):
+    raise RuntimeError("Can't convert IrInductiveDefinition to Term, it is intended for creating InductiveDef's only.")
+  def to_definition(self, defns: Definitions):
+    return InductiveDef(self.name, self.sort, self.params, self.indices, self.constructors, defns)
+
 def selfref_sub(node:IrNode, selfref_ir:IrNode) -> IrNode:
   match node:
     case IrLam(param, A, body):

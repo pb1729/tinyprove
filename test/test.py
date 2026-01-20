@@ -150,31 +150,25 @@ print(DEFNS.defs["eq_1_1"].type.str([]))
 print(DEFNS.defs["eq_2_2"].type.str([]))
 
 
-DEFNS.add(InductiveDef("Vec", IrSort(0), [("A", IrSort(0))], [("len", IrConst("Nat"))],
-  [
-    IrConstructorDefinition("empty", [], [IrConst("Nat.Z")]),
-    IrConstructorDefinition("append",
-      [("l", IrConst("Nat")), ("a", IrVar("A")), ("rest", IrInductiveSelfRef([IrVar("l")]))],
-      [IrApp(IrConst("Nat.S"), IrVar("l"))]),
-  ], DEFNS))
+DEFNS.add(parse_ir("""
+    ι Vec (A: Type0) [l: Nat] : Type0
+      | empty () => Vec[Nat.Z]
+      | append (l: Nat, a: A, rest: Vec[l]) => Vec[(Nat.S l)]  
+  """).to_definition(DEFNS))
 
 # bullshit inductive type that is both recursive and has multiple indices for testing purposes
-DEFNS.add(InductiveDef("Blorb", IrSort(0), [], [("n", IrConst("Nat")), ("m", IrConst("Nat"))],
-  [
-    IrConstructorDefinition("base", [], [IrConst("Nat.Z"), IrConst("Nat.Z")]),
-    IrConstructorDefinition("inl",
-      [("nn", IrConst("Nat")), ("mm", IrConst("Nat")), ("child", IrInductiveSelfRef([IrVar("nn"), IrVar("mm")]))],
-      [IrApp(IrConst("Nat.S"), IrVar("nn")), IrVar("mm")]),
-    IrConstructorDefinition("inr",
-      [("nn", IrConst("Nat")), ("mm", IrConst("Nat")), ("child", IrInductiveSelfRef([IrVar("nn"), IrVar("mm")]))],
-      [IrVar("nn"), IrApp(IrConst("Nat.S"), IrVar("mm"))]),
-  ], DEFNS))
+DEFNS.add(parse_ir("""
+    ι Blorb () [n: Nat, m: Nat] : Type0
+      | base () => Blorb[Nat.Z, Nat.Z]
+      | inl (n: Nat, m: Nat, child: Blorb[n, m]) => Blorb[(Nat.S n), m]
+      | inr (n: Nat, m: Nat, child: Blorb[n, m]) => Blorb[n, (Nat.S m)]
+  """).to_definition(DEFNS))
 
-DEFNS.add(InductiveDef("Mat", IrSort(0), [("A", IrSort(0))], [("n", IrConst("Nat")), ("m", IrConst("Nat"))],
-  [
-    IrConstructorDefinition("empty", [("nn", IrConst("Nat"))], [IrVar("nn"), IrConst("Nat.Z")]),
-    IrConstructorDefinition("append", [("nn", IrConst("Nat")), ("mm", IrConst("Nat")), ("row", IrApp(IrApp(IrConst("Vec"), IrVar("A")), IrVar("nn"))), ("rest", IrInductiveSelfRef([IrVar("nn"), IrVar("mm")]))], [IrVar("nn"), IrApp(IrConst("Nat.S"), IrVar("mm"))])
-  ], DEFNS))
+DEFNS.add(parse_ir("""
+    ι Mat (A: Type0) [n: Nat, m: Nat] : Type0
+      | empty (n: Nat) => Mat[n, Nat.Z]
+      | append (n: Nat, m: Nat, row: (Vec A n), rest: Mat[n, m]) => Mat[n, (Nat.S m)]
+  """).to_definition(DEFNS))
 
 
 DEFNS.add(ConstDefinition("inc_vec",
@@ -756,6 +750,7 @@ test("add left cancellation",
 
 
 
+
 # ----------------------------------
 #   Show all current definitions
 # ----------------------------------
@@ -785,6 +780,10 @@ for name in DEFNS.defs:
   defs_obj = DEFNS.defs[name]
   show_definition(defs_obj)
   
+
+
+# TODO: add negative tests!!!!!
+
 
 
 

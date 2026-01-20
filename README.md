@@ -53,7 +53,7 @@ The last thing you might be curious about is: "What does `Type0` mean?" It is ne
 
 ### Entering Symbols
 
-You can write `Π` using the hex code `3a0`. You can write `λ` using the hex code `3bb`. These are worth memorizing, copy-pasting those symbols around all the time is *not* fun. Writing unicode characters depends a bit on your computer, but `Ctl-Shift-U` followed by typing the hex code and pressing `Enter` is pretty common. Seriously, it's only two codes, go ahead and memorize them.
+You can write `Π` using the hex code `3a0`. You can write `λ` using the hex code `3bb`. You can write `ι` using the hex code `3b9`. These are worth memorizing, copy-pasting those symbols around all the time is *not* fun. Writing unicode characters depends a bit on your computer, but `Ctl-Shift-U` followed by typing the hex code and pressing `Enter` is pretty common. Seriously, it's only three codes, go ahead and memorize them.
 
 ### Applications
 
@@ -182,7 +182,7 @@ Because definitions can depend on other definitions, we need to pass `DEFNS` whe
 
 ### Inductive Types
 
-One of the standard ways to create new types in tinyprove is to define an inductive type. `False`, `And`, `Or`, `Nat`, and even `Eq` (equality) are all in fact defined as inductive types! You define an inductive type by defining its paramters, indices, and constructors. The `Nat` type does not have any parameters or indices, so it makes a nice starting example. Nat has two constructors, `Nat.Z` and `Nat.S`. Let's see their types:
+One thing we need to be able to do most of modern mathematics is to define inductive types. `False`, `And`, `Or`, `Nat`, and even `Eq` (equality) are all in fact defined as inductive types! You define an inductive type by defining its paramters, indices, and constructors. The `Nat` type does not have any parameters or indices, so it makes a nice starting example. Nat has two constructors, `Nat.Z` and `Nat.S`. Let's see their types:
 
 ```python
 print(DEFNS["Nat.Z"].str([]))
@@ -200,7 +200,7 @@ So `Nat.Z` is already a natural number. In fact, it's the smallest natural numbe
 
 One thing that's interesting here is that the type `Nat` is *recursive*. Some of its constructors (i.e. `Nat.S`) need arguments that are themselves of type `Nat`. This kind of recursion is very powerful, but it means we can't just define our constructors using `Term`s. After all, the `Nat` type is not yet defined, so there's no way for us to specify that a constructor should take an argument of type `Nat`.
 
-Tinyprove's solution to this is to define an **intermediate representation** (IR) to represent the *syntax* of tinyprove expressions. While we can think of `Term`s more or less as actual values, `IrNode`s (the datatype of our intermediate representation) just encode the *representations* of those values. An `IrNode` can be converted to an actual `Term` by calling its `.to_term([])` method. You can get the `IrNode` for an expression by using the `parse_ir()` function. Indeed, the `parse` function itself actually works by first using `parse_ir` to obtain the IR for the expression, and then calling `.to_term([])` on the result.
+Tinyprove's solution to this is to have an **intermediate representation** (IR) to represent the *syntax* of tinyprove expressions. While we can think of `Term`s more or less as actual values, `IrNode`s (the datatype of our intermediate representation) just encode the *representations* of those values. An `IrNode` can be converted to an actual `Term` by calling its `.to_term([])` method. You can get the `IrNode` for an expression by using the `parse_ir()` function. Indeed, the `parse` function itself actually works by first using `parse_ir` to obtain the IR for the expression, and then calling `.to_term([])` on the result.
 
 You can also build up the intermediate representation yourself from scratch. This is the intended clean way for you to generate tinyprove code programatically. (You could generate strings and then parse them, but it's easier to just work with the IR directly.) The basic IR datatypes are:
 * IrSort(level)
@@ -213,22 +213,34 @@ You can also build up the intermediate representation yourself from scratch. Thi
 These are the kinds of `IrNode` we need to make arbitrary `Term`s, but to define inductive types we need a couple more:
 * IrInductiveSelfRef(indices)
 * IrConstructorDefinition(constructor_name, args, result\_indices)
+* IrInductiveDefinition(name, sort, params, indices, constructors)
 
-So, for example, the constructor `Nat.S` is defined as follows:
-
-```python
-IrConstructorDefinition("S", [("n", IrInductiveSelfRef([]))], [])
-```
-
-The `args` of a constructor are a list of `(name: str, type: IrNode)` tuples, where we specify the names and types of the args. Here, the use of `IrInductiveSelfRef([])` as the type of `n` indicates that `n` is a `Nat`, i.e. an instance of the type we're defining. Here's the full definition of `Nat`:
+The way to think about this is that there's no sensible way to say that the definition of an inductive type has a *value*, but it does certainly have a syntactic representation. And therefore it can be built from `IrNode`s. If `my_inductive_def_ir` is an instance of `IrInductiveDefinition`, then you can add the inductive type it defines to your `Definitions` object as follows (note that you need to pass the `Definitions` object so that you have access to the definitions of existing constants):
 
 ```python
-DEFNS.add(InductiveDef("Nat", IrSort(0), [], [],
-  [
-    IrConstructorDefinition("Z", [], []),
-    IrConstructorDefinition("S", [("n", IrInductiveSelfRef([]))], []),
-  ], DEFNS))
+DEFNS.add(my_inductive_def_ir.to_definition(DEFNS))
 ```
+
+If you are writing tinyprove code by hand (as opposed to programatically) and want to define an inductive type there is a syntax for that, which can then be parsed into an `IrInductiveDefinition`. You write `ι TypeName (param_1: Param1Type, param_2: Param2Type...) [index_1: Index1Type, index_2: Index2Type...] : Sort` where `Sort` is `Type0` or `Type1`, etc. After that, you write all the constructors. Each constructor is written as `| constructor_name (arg_1: Arg1Type, arg_2: Arg2Type...) => TypeName[index_1_val, index_2_val...]`. Any constructor arguments whose type is the type being defined are written with indices after the type name in brackets.
+
+So, for example, the constructor `Nat.S` has the following tinyprove syntax:
+
+```
+ι Nat () [] : Type0
+  | Z () => Nat[]
+  | S (n: Nat[]) => Nat[]
+```
+
+It would be added to `DEFNS` as follows (note that we call `parse_ir`, rather than `parse`:
+
+```python
+ans.add(parse_ir("""
+    ι Nat () [] : Type0
+      | Z () => Nat[]
+      | S (n: Nat[]) => Nat[]
+  """).to_definition(ans))
+```
+
 
 #### induction
 
@@ -318,16 +330,14 @@ To summarize the difference between parameters and indices in a few words:
 
 Indices are one of the more difficult-to-understand parts of inductive types. Equality will be our example for this section. Here is how `Eq` is defined:
 
-```python
-DEFNS.add(InductiveDef("Eq", IrSort(0), [("A", IrSort(0)), ("x", IrVar("A"))], [("y", IrVar("A"))],
-  [
-    IrConstructorDefinition("refl", [], [IrVar("x")]),
-  ], DEFNS))
+```
+ι Eq (A: Type0, x: A) [y: A] : Type0
+  | refl () => Eq[x]
 ```
 
-Here we have a list of the type parameters `A: Type0` and `x: A` as the third argument to `InductiveDef`. The fourth argument is a list of indices, and says that we have one index `y: A`. `Eq` has only one constructor, `Eq.refl`. This constructor takes no arguments (`[]` in the constructor definition), but remember that we still have to tell it the type parameters, so a call to `Eq.refl` would look something like `(Eq.refl Nat Nat.Z)`, which produces a proof of type `(Eq Nat Nat.Z Nat.Z)`, aka "0 = 0".
+Here we have type parameters `A: Type0` and `x: A`, and we have one index `y: A`. `Eq` has only one constructor, `Eq.refl`. This constructor takes no arguments (`()` in the constructor definition), but remember that we still have to tell it the type parameters, so a call to `Eq.refl` would look something like `(Eq.refl Nat Nat.Z)`, which produces a proof of type `(Eq Nat Nat.Z Nat.Z)`, aka "0 = 0".
 
-Each constructor has to tell us the indices that it produces. The `[IrVar("x")]` says that the `Eq.refl` constructor produces `x` as the index of the resulting equaltiy type. Just like all the other inductive types, `Eq.ind.0` is a thing, and it lets us use proofs of equalities to construct various other things. Here's an example of how we'd use it:
+Each constructor has to tell us the indices that it produces. The `=> Eq[x]` says that the `Eq.refl` constructor produces `x` as the index of the resulting equaltiy type. Just like all the other inductive types, `Eq.ind.0` is a thing, and it lets us use proofs of equalities to construct various other things. Here's an example of how we'd use it:
 
 ```python
 # Functions of equals are equal

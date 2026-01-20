@@ -1,5 +1,5 @@
 from .ir import *
-from .parser import parse
+from .parser import parse, parse_ir
 from .core import Definitions, AxiomDefinition
 from .inductive import InductiveDef, IrConstructorDefinition, IrInductiveSelfRef
 
@@ -10,39 +10,41 @@ def get_usual_axioms(classical:bool=True):
 
   # Constructive:
 
-  ans.add(InductiveDef("False", IrSort(0), [], [], [], ans))
+  ans.add(parse_ir("""
+    ι False () [] : Type0
+  """).to_definition(ans))
 
-  ans.add(InductiveDef("Unit", IrSort(0), [], [],
-    [
-      IrConstructorDefinition("in", [], []),
-    ], ans))
+  ans.add(parse_ir("""
+    ι Unit () [] : Type0
+      | in () => Unit[]
+  """).to_definition(ans))
 
-  ans.add(InductiveDef("And", IrSort(0), [("A", IrSort(0)), ("B", IrSort(0))], [],
-    [
-      IrConstructorDefinition("in", [("a", IrVar("A")), ("b", IrVar("B"))], []),
-    ], ans))
-
-  ans.add(InductiveDef("Or", IrSort(0), [("A", IrSort(0)), ("B", IrSort(0))], [],
-    [
-      IrConstructorDefinition("inl", [("a", IrVar("A"))], []),
-      IrConstructorDefinition("inr", [("b", IrVar("B"))], []),
-    ], ans))
-
-  ans.add(InductiveDef("Eq", IrSort(0), [("A", IrSort(0)), ("x", IrVar("A"))], [("y", IrVar("A"))],
-    [
-      IrConstructorDefinition("refl", [], [IrVar("x")]),
-    ], ans))
-
-  ans.add(InductiveDef("Exists", IrSort(0), [("A", IrSort(0)), ("P", IrPi("a", IrVar("A"), IrSort(0)))], [],
-    [
-      IrConstructorDefinition("in", [("a", IrVar("A")), ("pa", IrApp(IrVar("P"), IrVar("a")))], []),
-    ], ans))
-
-  ans.add(InductiveDef("Nat", IrSort(0), [], [],
-    [
-      IrConstructorDefinition("Z", [], []),
-      IrConstructorDefinition("S", [("n", IrInductiveSelfRef([]))], []),
-    ], ans))
+  ans.add(parse_ir("""
+    ι And (A: Type0, B: Type0) [] : Type0
+      | in (a: A, b: B) => And[]
+  """).to_definition(ans))
+  
+  ans.add(parse_ir("""
+    ι Or (A: Type0, B: Type0) [] : Type0
+      | inl (a: A) => Or[]
+      | inr (b: B) => Or[]
+  """).to_definition(ans))
+  
+  ans.add(parse_ir("""
+    ι Eq (A: Type0, x: A) [y: A] : Type0
+      | refl () => Eq[x]
+  """).to_definition(ans))
+  
+  ans.add(parse_ir("""
+    ι Exists (A: Type0, P: (Π a: A => Type0)) [] : Type0
+      | in (a: A, pa: (P a)) => Exists[]
+  """).to_definition(ans))
+  
+  ans.add(parse_ir("""
+    ι Nat () [] : Type0
+      | Z () => Nat[]
+      | S (n: Nat[]) => Nat[]
+  """).to_definition(ans))
 
 
   if classical: # Non-constructive:
