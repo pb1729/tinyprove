@@ -301,10 +301,13 @@ class AxiomDefinition:
     return None
 
 class ConstDefinition:
-  def __init__(self, name:str, value:Term, defns:Definitions):
+  def __init__(self, name:str, value:Term, defns:Definitions, expected_ty:(Term|None)=None):
     self.name = name
     self.value = whnf(value, defns)
     self.type = whnf(infer(self.value, [], defns), defns)
+    if expected_ty is not None:
+      if not conv(self.type, expected_ty, defns):
+        raise TypecheckError(f"When defining constant {self.name}, expected a type of {expected_ty.str([])} but actually got {self.type.str([])}.")
     self.used = find_used_defs(self.value)
   def get_type(self, key:List[str]) -> Term:
     match key:

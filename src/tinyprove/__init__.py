@@ -5,7 +5,7 @@ from .core import (
   infer, check,
 )
 from .ir import (
-  IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrApp,
+  IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrApp, IrConstantDefinition
 )
 from .parser import (
   parse_ir, parse,
@@ -15,7 +15,7 @@ from .inductive import (
   InductiveDef, IrConstructorDefinition, IrInductiveSelfRef,
 )
 from .axiom_defs import (
-  get_usual_axioms,
+  extend_definitions, get_usual_axioms,
 )
 
 

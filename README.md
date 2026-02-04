@@ -53,7 +53,12 @@ The last thing you might be curious about is: "What does `Type0` mean?" It is ne
 
 ### Entering Symbols
 
-You can write `Π` using the hex code `3a0`. You can write `λ` using the hex code `3bb`. You can write `ι` using the hex code `3b9`. These are worth memorizing, copy-pasting those symbols around all the time is *not* fun. Writing unicode characters depends a bit on your computer, but `Ctl-Shift-U` followed by typing the hex code and pressing `Enter` is pretty common. Seriously, it's only three codes, go ahead and memorize them.
+Tinyprove syntax uses four greek letters as special symbols. Here are their unicode codes:
+* `Π` has code `3a0`
+* `λ` has code `3bb`
+* `δ` has code `3b4`
+* `ι` has code `3b9`
+These are worth memorizing, copy-pasting those symbols around all the time is no fun. Writing unicode characters depends a bit on your computer, but `Ctl-Shift-U` followed by typing the hex code and pressing `Enter` is pretty common. Seriously, it's only four codes, go ahead and memorize them.
 
 ### Applications
 
@@ -155,13 +160,16 @@ which is exactly what we expected.
 
 ### Making Definitions
 
-You can make your own definitions and add them to `DEFNS`. This is done by making a `ConstDefinition` and then feeding it to `DEFNS.add()`:
+You can make your own definitions and add them to `DEFNS`. This is done with the `extend_definitions` function. This function will *update* the definitions object passed as its first argument to add (in order) each definition in the list of definitions passed as its second argument. Here's how we'd define addition with this system:
 
 ```python
 # define addition
-DEFNS.add(ConstDefinition("add",
-  parse("λ a: Nat -> λ b: Nat -> (Nat.ind.0 (λ _: Nat -> Nat) b (λ n: Nat -> λ r: Nat -> (Nat.S r)) a)"),
-  DEFNS))
+extend_definitions(DEFNS, [
+  """
+    δ add =
+      λ a: Nat -> λ b: Nat -> (Nat.ind.0 (λ _: Nat -> Nat) b (λ n: Nat -> λ r: Nat -> (Nat.S r)) a)
+  """
+])
 ```
 
 I'll explain what `Nat.ind.0` means later, but we can check what the type of the `add` function is by running:
@@ -178,7 +186,9 @@ which prints
 
 I.e. `add` takes two `Nat`s and produces a `Nat`, as expected.
 
-Because definitions can depend on other definitions, we need to pass `DEFNS` when creating a new definition. For example, `add` depended on having an existing `Nat` definition. So to make a ConstDefinition, we need to pass a unique name for the definition, a defined value, and our `Definitions` object.
+The symbol `δ` (for "define") is used like `let` or `const` in javascript to tell the language that we're making defining a constant. Then the constant name follows. Optionally, we can put the expected type of the constant next using `:` to denote type annotation. If we do this, tinyprove will typecheck the constant to ensure it has the type we specified. Finally, we put `=` followed by the actual value of the constant. We could have defined addition using either `δ add = ...` or `δ add: (Π a: Nat => Π b: Nat => Nat) = ...`.
+
+Note that extend_definitions has parsing built in, and so definitions are given as strings of tinyprove code. Because definitions are added in order, it's possible for definitions to refer to previous definitions in the passed list.
 
 ### Inductive Types
 
@@ -198,30 +208,9 @@ Nat
 
 So `Nat.Z` is already a natural number. In fact, it's the smallest natural number, zero. `Nat.S` is the successor function, it accepts a natural number `n` and produces the natural number `n + 1`. Every natural number except zero can be written as the successor of some other natural number. So the actual representation of the number 3 is `(Nat.S (Nat.S (Nat.S Nat.Z)))`.
 
-One thing that's interesting here is that the type `Nat` is *recursive*. Some of its constructors (i.e. `Nat.S`) need arguments that are themselves of type `Nat`. This kind of recursion is very powerful, but it means we can't just define our constructors using `Term`s. After all, the `Nat` type is not yet defined, so there's no way for us to specify that a constructor should take an argument of type `Nat`.
+One thing that's interesting here is that the type `Nat` is *recursive*. Some of its constructors (i.e. `Nat.S`) need arguments that are themselves of type `Nat`. This kind of recursion is very powerful, but it makes writing down inductive types slightly complicated. Inductive types can't simply be written as `Term`s in the existing language, so we can't define them as constants using the `δ ...` syntax described above. Instead, we have a special `ι` syntax for creating new inductive types.
 
-Tinyprove's solution to this is to have an **intermediate representation** (IR) to represent the *syntax* of tinyprove expressions. While we can think of `Term`s more or less as actual values, `IrNode`s (the datatype of our intermediate representation) just encode the *representations* of those values. An `IrNode` can be converted to an actual `Term` by calling its `.to_term([])` method. You can get the `IrNode` for an expression by using the `parse_ir()` function. Indeed, the `parse` function itself actually works by first using `parse_ir` to obtain the IR for the expression, and then calling `.to_term([])` on the result.
-
-You can also build up the intermediate representation yourself from scratch. This is the intended clean way for you to generate tinyprove code programatically. (You could generate strings and then parse them, but it's easier to just work with the IR directly.) The basic IR datatypes are:
-* IrSort(level)
-* IrConst(name)
-* IrVar(name)
-* IrPi(param_name, input\_type, output\_type)
-* IrLam(param_name, input\_type, body)
-* IrApp(fn, arg)
-
-These are the kinds of `IrNode` we need to make arbitrary `Term`s, but to define inductive types we need a couple more:
-* IrInductiveSelfRef(indices)
-* IrConstructorDefinition(constructor_name, args, result\_indices)
-* IrInductiveDefinition(name, sort, params, indices, constructors)
-
-The way to think about this is that there's no sensible way to say that the definition of an inductive type has a *value*, but it does certainly have a syntactic representation. And therefore it can be built from `IrNode`s. If `my_inductive_def_ir` is an instance of `IrInductiveDefinition`, then you can add the inductive type it defines to your `Definitions` object as follows (note that you need to pass the `Definitions` object so that you have access to the definitions of existing constants):
-
-```python
-DEFNS.add(my_inductive_def_ir.to_definition(DEFNS))
-```
-
-If you are writing tinyprove code by hand (as opposed to programatically) and want to define an inductive type there is a syntax for that, which can then be parsed into an `IrInductiveDefinition`. You write `ι TypeName (param_1: Param1Type, param_2: Param2Type...) [index_1: Index1Type, index_2: Index2Type...] : Sort` where `Sort` is `Type0` or `Type1`, etc. After that, you write all the constructors. Each constructor is written as `| constructor_name (arg_1: Arg1Type, arg_2: Arg2Type...) => TypeName[index_1_val, index_2_val...]`. Any constructor arguments whose type is the type being defined are written with indices after the type name in brackets.
+An inductive type definition is written: `ι TypeName (param_1: Param1Type, param_2: Param2Type...) [index_1: Index1Type, index_2: Index2Type...] : Sort` where `Sort` is `Type0` or `Type1`, etc. After that, you write all the constructors. Each constructor is written as `| constructor_name (arg_1: Arg1Type, arg_2: Arg2Type...) => TypeName[index_1_val, index_2_val...]`. Any constructor arguments whose type is the type being defined are written with indices after the type name in brackets.
 
 So, for example, the constructor `Nat.S` has the following tinyprove syntax:
 
@@ -231,14 +220,16 @@ So, for example, the constructor `Nat.S` has the following tinyprove syntax:
   | S (n: Nat[]) => Nat[]
 ```
 
-It would be added to `DEFNS` as follows (note that we call `parse_ir`, rather than `parse`:
+It would be added to `DEFNS` using `extend_definitions`, the same as a regular definition:
 
 ```python
-ans.add(parse_ir("""
+extend_definitions(DEFNS, [
+  """
     ι Nat () [] : Type0
       | Z () => Nat[]
       | S (n: Nat[]) => Nat[]
-  """).to_definition(ans))
+  """
+])
 ```
 
 
@@ -249,22 +240,23 @@ Let's review our definition of addition. I've expanded the code a little bit and
 Here's the intuitive explanation of how it works: If we want to define addition, one very simple way of doing it is to say that `0 + b = b` and `(n + 1) + b = (n + b) + 1`. Since we already have a function `Nat.S` for adding 1, we can use these rules to make a function that allows us to add any two numbers:
 
 ```python
-DEFNS.add(ConstDefinition("add",
-  parse("""
-    λ a: Nat -> λ b: Nat ->
-      (Nat.ind.0
-        (λ _: Nat -> Nat) # motive: our return type is simply Nat
-        # case where a = 0:
-        b
-        # case where a = n + 1:
-        (λ n: Nat -> λ r: Nat -> (Nat.S r)) # in this line, r is the recursive result, (n + b)
-        a # match on a
-      )
-  """),
-  DEFNS))
+extend_definitions(DEFNS, [
+  """
+    δ add =
+      λ a: Nat -> λ b: Nat ->
+        (Nat.ind.0
+          (λ _: Nat -> Nat) # motive: our return type is simply Nat
+          # case where a = 0:
+          b
+          # case where a = n + 1:
+          (λ n: Nat -> λ r: Nat -> (Nat.S r)) # in this line, r is the recursive result, (n + b)
+          a # match on a
+        )
+  """
+])
 ```
 
-We have to use recursion though. In the case where `a = n + 1`, we now have to add `n + b`. Thus, the case functions are applied recursively all the way until we reach zero. Then `b` is returned without a recursive call. It's a nice fact about inductive types that recursion on such a type *always terminates*. Maybe it's not obvious that this could be true, but it arises from the fact that instances of the type have to be built up in order. We start out with `Nat.Z`, and can only reach any higher number by applying `Nat.S` repeatedly. In the C programming language, you're allowed to make a struct with a pointer in it that points to itself. But this is not allowed in a proof language. Anything you feed to a constructor must *already fully exist*, and it can't be modified after the fact either. And because things must have been built by a finite process, we must be able to disassemble them by a finite process too.
+We have to use recursion here. In the case where `a = n + 1`, we now have to add `n + b`. Thus, the case functions are applied recursively all the way until we reach zero. Then `b` is returned without a recursive call. It's a nice fact about inductive types that recursion on such a type *always terminates*. Maybe it's not obvious that this could be true, but it arises from the fact that instances of the type have to be built up in order. We start out with `Nat.Z`, and can only reach any higher number by applying `Nat.S` repeatedly. In the C programming language, you're allowed to make a struct with a pointer in it that points to itself. But this is not allowed in a proof language. Anything you feed to a constructor must *already fully exist*, and it can't be modified after the fact either. And because things must have been built by a finite process, we must be able to disassemble them by a finite process too.
 
 What `Nat.ind.0` does is to provide a formal way of making a recursive function for the type `Nat`. It first asks for a motive, a function that gives us the type we want this whole recursion process to return. Then we need to provide cases to handle the constructors one by one. First we handle the `Nat.Z` constructor, then the `Nat.S` one. If a constructor accepts a recursive argument (i.e. one of its args is an inductive self-ref) then that case function gets passed a bonus argument: the result of recursively calling our `Nat.ind.0` expression on that argument.
 
@@ -414,9 +406,7 @@ Nat.ind.0                (Π @motive: (Π @instance: Nat => Type0) => (Π @case_
 
 ### Conclusion
 
-You now have all the basic knowledge you need to start proving things. When writing proofs, you should be making new `ConstDefinition`s all the time, new `InductiveDef`s every once in a while, and new `AxiomDefinition`s only if you really know what you're doing.
-
-If you get stuck, ask ChatGPT or another language model. But feed it this document first so it knows what's going on.
+You now have all the basic knowledge you need to start proving things. If you get stuck, ask ChatGPT or another language model. But feed it this document first so it knows what's going on.
 
 If you manage to prove `False` without adding any new `AxiomDefinition`s, that means there's something seriously wrong and you should submit an issue the includes the offending tinyprove code. Actually, if you find *any* bugs, please submit an issue. I'll also consider QoL improvements or feature requests, but keep in mind that I am very lazy.
 

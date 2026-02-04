@@ -1,7 +1,7 @@
 import re
 from typing import List, Tuple
 
-from .ir import IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrApp, to_positive_int
+from .ir import IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrApp, IrConstantDefinition, to_positive_int
 from .core import Term
 from .inductive import IrInductiveSelfRef, IrConstructorDefinition, IrInductiveDefinition
 
@@ -13,7 +13,7 @@ _token_re = re.compile(
   \s*                                 # skip leading whitespace
   (                                   # group captures only non-whitespace
       =>|->|                          # separators
-      [\[\]()\|,:λΠι]|                # punctuation (unicode lambdas, etc.)
+      [\[\]()\|,:=λΠδι]|              # punctuation (unicode lambdas, etc.)
       """ + _ident_re + """           # identifiers
   )
   """,
@@ -68,6 +68,8 @@ class Parser:
       return self._parse_lambda()
     if tok == "Π":
       return self._parse_pi()
+    if tok == "δ":
+      return self._parse_delta()
     if tok == "ι":
       return self._parse_iota()
     # Otherwise we are in application / atom land.
@@ -94,6 +96,18 @@ class Parser:
     B = self._parse_expr()
     self.env_pop()
     return IrPi(name, A, B)
+  def _parse_delta(self) -> IrNode:
+    self._eat("δ")
+    name = self._eat()
+    assert re.match(_ident_re, name), f"expected a valid constant name instead of {name}"
+    if self._peek() == ":": # type annotation / theorem statement supplied
+      self._eat(":")
+      expected_ty = self._parse_expr()
+    else:
+      expected_ty = None
+    self._eat("=")
+    value = self._parse_expr()
+    return IrConstantDefinition(name, value, expected_ty)
   def _parse_iota(self) -> IrNode:
     assert self.indty_name is None, "can't create an inductive typedef inside an existing one"
     self._eat("ι")
@@ -179,7 +193,7 @@ class Parser:
     while True:
       nxt = self._peek()
       # close-paren or separators break application chain. binder starts do as well.
-      if nxt is None or nxt in {")", "]", ":", ",", "=>", "->", "Π", "λ"}:
+      if nxt is None or nxt in {")", "]", ":", ",", "=>", "->", "Π", "λ", "="}:
         break
       arg = self._parse_atom()
       node = IrApp(node, arg)
@@ -232,5 +246,6 @@ def parse(src: str, ctx=None) -> Term:
   ans_ir = parse_ir(src, ctx)
   ctx_names = [] if ctx is None else [nm for nm, _ in ctx]
   return ans_ir.to_term(ctx_names)
+
 
 

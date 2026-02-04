@@ -1,4 +1,4 @@
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 from .core import *
 
@@ -80,5 +80,18 @@ def to_positive_int(digits:str) -> int | None:
     return None
   if val < 0: return None
   return val
+
+
+# IR node for constant definitions:
+@dataclass(frozen=True)
+class IrConstantDefinition(IrNode):
+  name: str
+  value: IrNode
+  expected_ty: Optional[IrNode]
+  def to_term(self, ctx_nm):
+    raise RuntimeError("Can't convert IrConstantDefinition to Term, it is intended for defining constants only.")
+  def to_definition(self, defns: Definitions):
+    expected_ty = self.expected_ty.to_term([]) if self.expected_ty is not None else None
+    return ConstDefinition(self.name, self.value.to_term([]), defns, expected_ty)
 
 

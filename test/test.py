@@ -107,13 +107,14 @@ test("Double-Negation Elimination",
 
 
 # define addition
-DEFNS.add(ConstDefinition("add",
-  parse("λ a: Nat -> λ b: Nat -> (Nat.ind.0 (λ _: Nat -> Nat) b (λ n: Nat -> λ r: Nat -> (Nat.S r)) a)"),
-  DEFNS))
-
-DEFNS.add(ConstDefinition("id_Nat",
-  parse("λ n: Nat -> n"),
-  DEFNS))
+extend_definitions(DEFNS, [
+  """
+    δ add: Π a: Nat => Π b: Nat => Nat =
+      λ a: Nat -> λ b: Nat -> (Nat.ind.0 (λ _: Nat -> Nat) b (λ n: Nat -> λ r: Nat -> (Nat.S r)) a)
+  """, """
+    δ id_Nat = λ n: Nat -> n
+  """
+])
 
 test("id_Nat equals its input (delta-reduction required)",
   "Π n: Nat => (Eq Nat (id_Nat n) n)",
@@ -121,159 +122,128 @@ test("id_Nat equals its input (delta-reduction required)",
 
 # try some evalutions that use iota reduction
 
-DEFNS.add(ConstDefinition("x2",
-  parse("(λ x: Nat -> (Nat.ind.0 (λ n: Nat -> Nat) Nat.Z (λ n: Nat -> λ rec:Nat -> (Nat.S (Nat.S rec))) x))"),
-  DEFNS))
-DEFNS.add(ConstDefinition("zero_x2",
-  parse("(x2 Nat.Z)"),
-  DEFNS))
-DEFNS.add(ConstDefinition("one_x2",
-  parse("(x2 (Nat.S Nat.Z))"),
-  DEFNS))
+extend_definitions(DEFNS, [
+  """
+    δ x2 = (λ x: Nat -> (Nat.ind.0 (λ n: Nat -> Nat) Nat.Z (λ n: Nat -> λ rec:Nat -> (Nat.S (Nat.S rec))) x))
+  """, """
+    δ zero_x2 = (x2 Nat.Z)
+  """, """
+    δ one_x2 = (x2 (Nat.S Nat.Z))
+  """, """
+    δ bi_inc =
+      λ x: Nat -> λ y: Nat -> λ eq_x_y: (Eq Nat x y) -> (Eq.ind.0 Nat x (λ x_idx: Nat -> λ instance: (Eq Nat x x_idx) -> (Eq Nat (Nat.S x) (Nat.S x_idx))) (Eq.refl Nat (Nat.S x)) y eq_x_y)
+  """, """
+    δ eq_1_1 =
+      (bi_inc Nat.Z Nat.Z (Eq.refl Nat Nat.Z))
+  """, """
+    δ eq_2_2 =
+      (bi_inc (Nat.S Nat.Z) (Nat.S Nat.Z) eq_1_1)
+  """
+])
 
 print(DEFNS.defs["zero_x2"].value.str([]))
 print(DEFNS.defs["one_x2"].value.str([]))
-
-DEFNS.add(ConstDefinition("bi_inc",
-  parse("λ x: Nat -> λ y: Nat -> λ eq_x_y: (Eq Nat x y) -> (Eq.ind.0 Nat x (λ x_idx: Nat -> λ instance: (Eq Nat x x_idx) -> (Eq Nat (Nat.S x) (Nat.S x_idx))) (Eq.refl Nat (Nat.S x)) y eq_x_y)"),
-  DEFNS))
-DEFNS.add(ConstDefinition("eq_1_1",
-  parse("(bi_inc Nat.Z Nat.Z (Eq.refl Nat Nat.Z))"),
-  DEFNS))
-DEFNS.add(ConstDefinition("eq_2_2",
-  parse("(bi_inc (Nat.S Nat.Z) (Nat.S Nat.Z) eq_1_1)"),
-  DEFNS))
-
-
 print(DEFNS.defs["bi_inc"].type.str([]))
 print(DEFNS.defs["eq_1_1"].type.str([]))
 print(DEFNS.defs["eq_2_2"].type.str([]))
 
 
-DEFNS.add(parse_ir("""
+print("\n\nSTART IOTA INDICES TESTING\n")
+
+extend_definitions(DEFNS, [
+  """
     ι Vec (A: Type0) [l: Nat] : Type0
       | empty () => Vec[Nat.Z]
       | append (l: Nat, a: A, rest: Vec[l]) => Vec[(Nat.S l)]  
-  """).to_definition(DEFNS))
-
-# bullshit inductive type that is both recursive and has multiple indices for testing purposes
-DEFNS.add(parse_ir("""
+  """, """
+    # bullshit inductive type that is both recursive and has multiple indices for testing purposes:
     ι Blorb () [n: Nat, m: Nat] : Type0
       | base () => Blorb[Nat.Z, Nat.Z]
       | inl (n: Nat, m: Nat, child: Blorb[n, m]) => Blorb[(Nat.S n), m]
       | inr (n: Nat, m: Nat, child: Blorb[n, m]) => Blorb[n, (Nat.S m)]
-  """).to_definition(DEFNS))
-
-DEFNS.add(parse_ir("""
+  """, """
     ι Mat (A: Type0) [n: Nat, m: Nat] : Type0
       | empty (n: Nat) => Mat[n, Nat.Z]
       | append (n: Nat, m: Nat, row: (Vec A n), rest: Mat[n, m]) => Mat[n, (Nat.S m)]
-  """).to_definition(DEFNS))
+  """, """
+    δ inc_vec =
+      λ len: Nat -> λ v: (Vec Nat len) ->
+      (Vec.ind.0 Nat
+        (λ _l: Nat -> λ inst: (Vec Nat _l) -> (Vec Nat _l))
+        (Vec.empty Nat)
+        (λ l: Nat -> λ head: Nat -> λ rest: (Vec Nat l) -> λ rec_rest: (Vec Nat l) ->
+          (Vec.append Nat l (Nat.S head) rec_rest))
+        len
+        v)
+  """, """
+    δ use_inc_vec_eg_1 = (inc_vec (Nat.S Nat.Z) (Vec.append Nat Nat.Z (Nat.S Nat.Z) (Vec.empty Nat)))
+  """, """
+    δ mirror_blorb = 
+      λ n: Nat -> λ m: Nat -> λ blorb: (Blorb n m) ->
+      (Blorb.ind.0
+        (λ _n: Nat -> λ _m: Nat -> λ scrut: (Blorb _n _m) -> (Blorb _m _n)) # motive: blorb with flipped inds
+        (Blorb.base) # base case
+        (λ nn: Nat -> λ mm: Nat -> λ child: (Blorb nn mm) -> λ rec_child: (Blorb mm nn) -> (Blorb.inr mm nn rec_child)) # inl case makes inr
+        (λ nn: Nat -> λ mm: Nat -> λ child: (Blorb nn mm) -> λ rec_child: (Blorb mm nn) -> (Blorb.inl mm nn rec_child)) # inr case makes inl
+        n m # indices
+        blorb
+      )
+  """, """
+    δ use_mirror_blorb_eg_1 = 
+      (mirror_blorb
+        (Nat.S Nat.Z) (Nat.S Nat.Z)
+        (Blorb.inl Nat.Z (Nat.S Nat.Z) (Blorb.inr Nat.Z Nat.Z Blorb.base))
+      )
+  """, """
+    δ inc_mat = 
+      λ n: Nat -> λ m: Nat -> λ mat: (Mat Nat n m) ->
+      (Mat.ind.0 Nat
+        (λ _n: Nat -> λ _m: Nat -> λ inst: (Mat Nat _n _m) -> (Mat Nat _n _m))
 
+        # case_empty: Π nn:Nat, motive nn 0 (empty nn)
+        (λ nn: Nat -> (Mat.empty Nat nn))
 
-DEFNS.add(ConstDefinition("inc_vec",
-  parse("""
-    λ len: Nat -> λ v: (Vec Nat len) ->
-    (Vec.ind.0 Nat
-      (λ _l: Nat -> λ inst: (Vec Nat _l) -> (Vec Nat _l))
-      (Vec.empty Nat)
-      (λ l: Nat -> λ head: Nat -> λ rest: (Vec Nat l) -> λ rec_rest: (Vec Nat l) ->
-        (Vec.append Nat l (Nat.S head) rec_rest))
-      len
-      v)"""),
-  DEFNS))
+        # case_append:
+        (λ nn: Nat -> λ mm: Nat ->
+         λ row:  (Vec Nat nn) ->
+         λ rest: (Mat Nat nn mm) ->
+         λ rec_rest: (Mat Nat nn mm) ->
+           (Mat.append Nat nn mm (inc_vec nn row) rec_rest))
 
-print("\n\nSTART IOTA INDICES TESTING\n")
-
-
-DEFNS.add(ConstDefinition("use_inc_vec_eg_1",
-  parse("(inc_vec (Nat.S Nat.Z) (Vec.append Nat Nat.Z (Nat.S Nat.Z) (Vec.empty Nat)))"),
-  DEFNS))
-
-print(DEFNS.defs["use_inc_vec_eg_1"].value.str([]))
-
-
-DEFNS.add(ConstDefinition("mirror_blorb",
-  parse("""
-    λ n: Nat -> λ m: Nat -> λ blorb: (Blorb n m) ->
-    (Blorb.ind.0
-      (λ _n: Nat -> λ _m: Nat -> λ scrut: (Blorb _n _m) -> (Blorb _m _n)) # motive: blorb with flipped inds
-      (Blorb.base) # base case
-      (λ nn: Nat -> λ mm: Nat -> λ child: (Blorb nn mm) -> λ rec_child: (Blorb mm nn) -> (Blorb.inr mm nn rec_child)) # inl case makes inr
-      (λ nn: Nat -> λ mm: Nat -> λ child: (Blorb nn mm) -> λ rec_child: (Blorb mm nn) -> (Blorb.inl mm nn rec_child)) # inr case makes inl
-      n m # indices
-      blorb
-    )
-    """),
-  DEFNS))
-
-
-DEFNS.add(ConstDefinition("use_mirror_blorb_eg_1",
-  parse("""
-    (mirror_blorb
-      (Nat.S Nat.Z) (Nat.S Nat.Z)
-      (Blorb.inl Nat.Z (Nat.S Nat.Z) (Blorb.inr Nat.Z Nat.Z Blorb.base))
-    )
-    """),
-  DEFNS))
-
-print(DEFNS.defs["use_mirror_blorb_eg_1"].value.str([]))
-
-
-DEFNS.add(ConstDefinition("inc_mat",
-  parse(r"""
-    λ n: Nat -> λ m: Nat -> λ mat: (Mat Nat n m) ->
-    (Mat.ind.0 Nat
-      (λ _n: Nat -> λ _m: Nat -> λ inst: (Mat Nat _n _m) -> (Mat Nat _n _m))
-
-      # case_empty: Π nn:Nat, motive nn 0 (empty nn)
-      (λ nn: Nat -> (Mat.empty Nat nn))
-
-      # case_append:
-      (λ nn: Nat -> λ mm: Nat ->
-       λ row:  (Vec Nat nn) ->
-       λ rest: (Mat Nat nn mm) ->
-       λ rec_rest: (Mat Nat nn mm) ->
-         (Mat.append Nat nn mm (inc_vec nn row) rec_rest))
-
-      n
-      m
-      mat)
-  """),
-  DEFNS
-))
-
-
-DEFNS.add(ConstDefinition("use_inc_mat_eg_1",
-  parse(r"""
-    (inc_mat
-      (Nat.S (Nat.S Nat.Z))         # n = 2
-      (Nat.S (Nat.S Nat.Z))         # m = 2
-      (Mat.append Nat
-        (Nat.S (Nat.S Nat.Z))       # nn = 2
-        (Nat.S Nat.Z)               # mm = 1
-        (Vec.append Nat
-          (Nat.S Nat.Z)             # len = 1
-          (Nat.S (Nat.S (Nat.S Nat.Z)))   # 3
-          (Vec.append Nat
-            Nat.Z
-            (Nat.S (Nat.S (Nat.S (Nat.S Nat.Z))))  # 4
-            (Vec.empty Nat)))
+        n
+        m
+        mat)
+  """, """
+    δ use_inc_mat_eg_1 = 
+      (inc_mat
+        (Nat.S (Nat.S Nat.Z))         # n = 2
+        (Nat.S (Nat.S Nat.Z))         # m = 2
         (Mat.append Nat
-          (Nat.S (Nat.S Nat.Z))     # nn = 2
-          Nat.Z                     # mm = 0
+          (Nat.S (Nat.S Nat.Z))       # nn = 2
+          (Nat.S Nat.Z)               # mm = 1
           (Vec.append Nat
-            (Nat.S Nat.Z)
-            (Nat.S Nat.Z)           # 1
+            (Nat.S Nat.Z)             # len = 1
+            (Nat.S (Nat.S (Nat.S Nat.Z)))   # 3
             (Vec.append Nat
               Nat.Z
-              (Nat.S (Nat.S Nat.Z)) # 2
+              (Nat.S (Nat.S (Nat.S (Nat.S Nat.Z))))  # 4
               (Vec.empty Nat)))
-          (Mat.empty Nat (Nat.S (Nat.S Nat.Z))))))
-  """),
-  DEFNS
-))
+          (Mat.append Nat
+            (Nat.S (Nat.S Nat.Z))     # nn = 2
+            Nat.Z                     # mm = 0
+            (Vec.append Nat
+              (Nat.S Nat.Z)
+              (Nat.S Nat.Z)           # 1
+              (Vec.append Nat
+                Nat.Z
+                (Nat.S (Nat.S Nat.Z)) # 2
+                (Vec.empty Nat)))
+            (Mat.empty Nat (Nat.S (Nat.S Nat.Z))))))
+  """
+])
 
+print(DEFNS.defs["use_inc_vec_eg_1"].value.str([]))
+print(DEFNS.defs["use_mirror_blorb_eg_1"].value.str([]))
 print(DEFNS.defs["use_inc_mat_eg_1"].value.str([]))
 
 
@@ -295,18 +265,18 @@ test("add 1 1 = 2",
 # 2) 1 != 0   (i.e. Eq Nat 1 0 -> False)
 # ------------------------------------------------------------
 
-DEFNS.add(ConstDefinition("isSucc",
-  parse(r"""
-    λ n: Nat ->
-    (Nat.ind.1
-      (λ _: Nat -> Type0)
-      False
-      (λ _: Nat -> λ rec: Type0 -> Unit)
-      n
-    )
-  """),
-  DEFNS
-))
+extend_definitions(DEFNS, [
+  """
+    δ isSucc =
+      λ n: Nat ->
+      (Nat.ind.1
+        (λ _: Nat -> Type0)
+        False
+        (λ _: Nat -> λ rec: Type0 -> Unit)
+        n
+      )
+  """
+])
 
 test("1 != 0",
 # Theorem:
@@ -418,10 +388,13 @@ test("add n 0 = n",
 #   Multiplication, etc
 # ----------------------------
 
-# define addition
-DEFNS.add(ConstDefinition("mul",
-  parse("λ a: Nat -> λ b: Nat -> (Nat.ind.0 (λ _: Nat -> Nat) Nat.Z (λ n: Nat -> λ r: Nat -> (add b r)) a)"),
-  DEFNS))
+# define multiplication
+extend_definitions(DEFNS, [
+  """
+    δ mul: Π a: Nat => Π b: Nat => Nat =
+      λ a: Nat -> λ b: Nat -> (Nat.ind.0 (λ _: Nat -> Nat) Nat.Z (λ n: Nat -> λ r: Nat -> (add b r)) a)
+  """
+])
 
 test("mul 2 2 = 4",
   # Theorem:
@@ -435,208 +408,46 @@ test("mul 2 2 = 4",
 #   Equality helpers
 # ----------------------------
 
-DEFNS.add(ConstDefinition("apS",
-  parse(
-    "λ x: Nat -> λ y: Nat -> λ p: (Eq Nat x y) -> "
-    "(Eq.ind.0 Nat x "
-      "(λ y_idx: Nat -> λ instance: (Eq Nat x y_idx) -> "
-        "(Eq Nat (Nat.S x) (Nat.S y_idx))"
-      ") "
-      "(Eq.refl Nat (Nat.S x)) "
-      "y "
-      "p"
-    ")"
-  ),
-  DEFNS))
-
-DEFNS.add(ConstDefinition("symm",
-  parse(
-    "λ A: Type0 -> λ x: A -> λ y: A -> λ p: (Eq A x y) -> "
-    "(Eq.ind.0 A x "
-      "(λ y_idx: A -> λ instance: (Eq A x y_idx) -> (Eq A y_idx x)) "
-      "(Eq.refl A x) "
-      "y "
-      "p"
-    ")"
-  ),
-  DEFNS))
-
-DEFNS.add(ConstDefinition("trans",
-  parse(
-    "λ A: Type0 -> λ x: A -> λ y: A -> λ z: A -> "
-    "λ p: (Eq A x y) -> λ q: (Eq A y z) -> "
-    "((Eq.ind.0 A x "
-      "(λ y_idx: A -> λ instance: (Eq A x y_idx) -> "
-        "Π z2: A => Π q2: (Eq A y_idx z2) => (Eq A x z2)"
-      ") "
-      "(λ z2: A -> λ q2: (Eq A x z2) -> q2) "
-      "y "
-      "p"
-    ") z q)"
-  ),
-  DEFNS))
-
-DEFNS.add(ConstDefinition("ap",
-  parse(
-    "λ A: Type0 -> λ B: Type0 -> λ f: (Π a: A => B) -> "
-    "λ a1: A -> λ a2: A -> λ p: (Eq A a1 a2) -> "
-    "(Eq.ind.0 A a1 "
-      "(λ a2_idx: A -> λ instance: (Eq A a1 a2_idx) -> "
-        "(Eq B (f a1) (f a2_idx))"
-      ") "
-      "(Eq.refl B (f a1)) "
-      "a2 "
-      "p"
-    ")"
-  ),
-  DEFNS))
+extend_definitions(DEFNS, [
+  """
+    δ apS =
+      λ x: Nat -> λ y: Nat -> λ p: (Eq Nat x y) -> (Eq.ind.0 Nat x (λ y_idx: Nat -> λ instance: (Eq Nat x y_idx) -> (Eq Nat (Nat.S x) (Nat.S y_idx))) (Eq.refl Nat (Nat.S x)) y p)
+  """, """
+    δ symm =
+      λ A: Type0 -> λ x: A -> λ y: A -> λ p: (Eq A x y) -> (Eq.ind.0 A x (λ y_idx: A -> λ instance: (Eq A x y_idx) -> (Eq A y_idx x)) (Eq.refl A x) y p)
+  """, """
+    δ trans =
+      λ A: Type0 -> λ x: A -> λ y: A -> λ z: A -> λ p: (Eq A x y) -> λ q: (Eq A y z) -> ((Eq.ind.0 A x (λ y_idx: A -> λ instance: (Eq A x y_idx) -> Π z2: A => Π q2: (Eq A y_idx z2) => (Eq A x z2)) (λ z2: A -> λ q2: (Eq A x z2) -> q2) y p) z q)
+  """, """
+    δ ap =
+      λ A: Type0 -> λ B: Type0 -> λ f: (Π a: A => B) -> λ a1: A -> λ a2: A -> λ p: (Eq A a1 a2) -> (Eq.ind.0 A a1 (λ a2_idx: A -> λ instance: (Eq A a1 a2_idx) -> (Eq B (f a1) (f a2_idx))) (Eq.refl B (f a1)) a2 p)
+  """
+])
 
 
 # ----------------------------
 #   Addition lemmas
 # ----------------------------
+extend_definitions(DEFNS, [
+  """
+    δ add_zero_right =
+      λ n: Nat -> (Nat.ind.0 (λ n_idx: Nat -> (Eq Nat (add n_idx Nat.Z) n_idx)) (Eq.refl Nat (add Nat.Z Nat.Z)) (λ k: Nat -> λ ih: (Eq Nat (add k Nat.Z) k) -> (apS (add k Nat.Z) k ih)) n)
+  """, """
+    δ add_succ_right =
+      λ b: Nat -> λ a: Nat -> (Nat.ind.0 (λ b_idx: Nat -> (Eq Nat (add b_idx (Nat.S a)) (Nat.S (add b_idx a)))) (Eq.refl Nat (add Nat.Z (Nat.S a))) (λ k: Nat -> λ ih: (Eq Nat (add k (Nat.S a)) (Nat.S (add k a))) -> (apS (add k (Nat.S a)) (Nat.S (add k a)) ih)) b)
+  """, """
+    δ add_assoc =
+      λ a: Nat -> (Nat.ind.0 (λ a_idx: Nat -> Π b: Nat => Π c: Nat => (Eq Nat (add (add a_idx b) c) (add a_idx (add b c)))) (λ b: Nat -> λ c: Nat -> (Eq.refl Nat (add b c))) (λ n: Nat -> λ ih: (Π b: Nat => Π c: Nat => (Eq Nat (add (add n b) c) (add n (add b c)))) -> λ b: Nat -> λ c: Nat -> (apS (add (add n b) c) (add n (add b c)) (ih b c))) a)
+  """, """
+    δ add_comm =
+      λ a: Nat -> (Nat.ind.0 (λ a_idx: Nat -> Π b: Nat => (Eq Nat (add a_idx b) (add b a_idx))) (λ b: Nat -> (symm Nat (add b Nat.Z) b (add_zero_right b))) (λ n: Nat -> λ ih: (Π b: Nat => (Eq Nat (add n b) (add b n))) -> λ b: Nat -> (trans Nat (Nat.S (add n b)) (Nat.S (add b n)) (add b (Nat.S n)) (apS (add n b) (add b n) (ih b)) (symm Nat (add b (Nat.S n)) (Nat.S (add b n)) (add_succ_right b n)))) a)
+  """, """
+    δ add_shuffle =
+      λ x: Nat -> λ y: Nat -> λ u: Nat -> λ v: Nat -> (trans Nat (add (add x y) (add u v)) (add x (add y (add u v))) (add (add x u) (add y v)) (add_assoc x y (add u v)) (trans Nat (add x (add y (add u v))) (add x (add (add y u) v)) (add (add x u) (add y v)) (ap Nat Nat (λ t: Nat -> add x t) (add y (add u v)) (add (add y u) v) (symm Nat (add (add y u) v) (add y (add u v)) (add_assoc y u v))) (trans Nat (add x (add (add y u) v)) (add (add x (add y u)) v) (add (add x u) (add y v)) (symm Nat (add (add x (add y u)) v) (add x (add (add y u) v)) (add_assoc x (add y u) v)) (trans Nat (add (add x (add y u)) v) (add (add (add x u) y) v) (add (add x u) (add y v)) (ap Nat Nat (λ t: Nat -> add t v) (add x (add y u)) (add (add x u) y) (trans Nat (add x (add y u)) (add x (add u y)) (add (add x u) y) (ap Nat Nat (λ t: Nat -> add x t) (add y u) (add u y) (add_comm y u)) (symm Nat (add (add x u) y) (add x (add u y)) (add_assoc x u y)))) (add_assoc (add x u) y v)))))
+  """
+])
 
-DEFNS.add(ConstDefinition("add_zero_right",
-  parse(
-    "λ n: Nat -> "
-    "(Nat.ind.0 "
-      "(λ n_idx: Nat -> (Eq Nat (add n_idx Nat.Z) n_idx)) "
-      "(Eq.refl Nat (add Nat.Z Nat.Z)) "
-      "(λ k: Nat -> λ ih: (Eq Nat (add k Nat.Z) k) -> "
-        "(apS (add k Nat.Z) k ih)"
-      ") "
-      "n"
-    ")"
-  ),
-  DEFNS))
 
-# add_succ_right b a: add b (S a) = S (add b a)
-DEFNS.add(ConstDefinition("add_succ_right",
-  parse(
-    "λ b: Nat -> λ a: Nat -> "
-    "(Nat.ind.0 "
-      "(λ b_idx: Nat -> (Eq Nat (add b_idx (Nat.S a)) (Nat.S (add b_idx a)))) "
-      "(Eq.refl Nat (add Nat.Z (Nat.S a))) "
-      "(λ k: Nat -> λ ih: (Eq Nat (add k (Nat.S a)) (Nat.S (add k a))) -> "
-        "(apS (add k (Nat.S a)) (Nat.S (add k a)) ih)"
-      ") "
-      "b"
-    ")"
-  ),
-  DEFNS))
-
-DEFNS.add(ConstDefinition("add_assoc",
-  parse(
-    "λ a: Nat -> "
-    "(Nat.ind.0 "
-      "(λ a_idx: Nat -> Π b: Nat => Π c: Nat => "
-        "(Eq Nat (add (add a_idx b) c) (add a_idx (add b c)))"
-      ") "
-      "(λ b: Nat -> λ c: Nat -> (Eq.refl Nat (add b c))) "
-      "(λ n: Nat -> "
-        "λ ih: (Π b: Nat => Π c: Nat => "
-          "(Eq Nat (add (add n b) c) (add n (add b c)))"
-        ") -> "
-        "λ b: Nat -> λ c: Nat -> "
-          "(apS (add (add n b) c) (add n (add b c)) (ih b c))"
-      ") "
-      "a"
-    ")"
-  ),
-  DEFNS))
-
-DEFNS.add(ConstDefinition("add_comm",
-  parse(
-    "λ a: Nat -> "
-    "(Nat.ind.0 "
-      "(λ a_idx: Nat -> Π b: Nat => (Eq Nat (add a_idx b) (add b a_idx))) "
-      "(λ b: Nat -> "
-        "(symm Nat (add b Nat.Z) b (add_zero_right b))"
-      ") "
-      "(λ n: Nat -> "
-        "λ ih: (Π b: Nat => (Eq Nat (add n b) (add b n))) -> "
-        "λ b: Nat -> "
-          "(trans Nat "
-            "(Nat.S (add n b)) "
-            "(Nat.S (add b n)) "
-            "(add b (Nat.S n)) "
-            "(apS (add n b) (add b n) (ih b)) "
-            "(symm Nat "
-              "(add b (Nat.S n)) "
-              "(Nat.S (add b n)) "
-              "(add_succ_right b n)"
-            ")"
-          ")"
-      ") "
-      "a"
-    ")"
-  ),
-  DEFNS))
-
-# shuffle: (x+y)+(u+v) = (x+u)+(y+v)
-DEFNS.add(ConstDefinition("add_shuffle",
-  parse(
-    "λ x: Nat -> λ y: Nat -> λ u: Nat -> λ v: Nat -> "
-    "(trans Nat "
-      "(add (add x y) (add u v)) "
-      "(add x (add y (add u v))) "
-      "(add (add x u) (add y v)) "
-      "(add_assoc x y (add u v)) "
-      "(trans Nat "
-        "(add x (add y (add u v))) "
-        "(add x (add (add y u) v)) "
-        "(add (add x u) (add y v)) "
-        "(ap Nat Nat "
-          "(λ t: Nat -> add x t) "
-          "(add y (add u v)) "
-          "(add (add y u) v) "
-          "(symm Nat "
-            "(add (add y u) v) "
-            "(add y (add u v)) "
-            "(add_assoc y u v)"
-          ")"
-        ") "
-        "(trans Nat "
-          "(add x (add (add y u) v)) "
-          "(add (add x (add y u)) v) "
-          "(add (add x u) (add y v)) "
-          "(symm Nat "
-            "(add (add x (add y u)) v) "
-            "(add x (add (add y u) v)) "
-            "(add_assoc x (add y u) v)"
-          ") "
-          "(trans Nat "
-            "(add (add x (add y u)) v) "
-            "(add (add (add x u) y) v) "
-            "(add (add x u) (add y v)) "
-            "(ap Nat Nat "
-              "(λ t: Nat -> add t v) "
-              "(add x (add y u)) "
-              "(add (add x u) y) "
-              "(trans Nat "
-                "(add x (add y u)) "
-                "(add x (add u y)) "
-                "(add (add x u) y) "
-                "(ap Nat Nat "
-                  "(λ t: Nat -> add x t) "
-                  "(add y u) "
-                  "(add u y) "
-                  "(add_comm y u)"
-                ") "
-                "(symm Nat "
-                  "(add (add x u) y) "
-                  "(add x (add u y)) "
-                  "(add_assoc x u y)"
-                ")"
-              ")"
-            ") "
-            "(add_assoc (add x u) y v)"
-          ")"
-        ")"
-      ")"
-    ")"
-  ),
-  DEFNS))
 
 
 # ----------------------------
@@ -682,28 +493,16 @@ test("distributive law",
 )
 
 
-
-# predecessor: pred 0 = 0, pred (S n) = n
-DEFNS.add(ConstDefinition("pred",
-  parse(
-    "λ n: Nat -> "
-    "(Nat.ind.0 "
-      "(λ _: Nat -> Nat) "
-      "Nat.Z "
-      "(λ k: Nat -> λ r: Nat -> k) "
-      "n"
-    ")"
-  ),
-  DEFNS))
-
-# injectivity of S, derived from pred + ap:
-# injS x y : (S x = S y) -> (x = y)
-DEFNS.add(ConstDefinition("injS",
-  parse(
-    "λ x: Nat -> λ y: Nat -> λ p: (Eq Nat (Nat.S x) (Nat.S y)) -> "
-    "(ap Nat Nat pred (Nat.S x) (Nat.S y) p)"
-  ),
-  DEFNS))
+extend_definitions(DEFNS, [
+  """
+    δ pred =
+      λ n: Nat -> (Nat.ind.0 (λ _: Nat -> Nat) Nat.Z (λ k: Nat -> λ r: Nat -> k) n)
+  """, """
+    δ injS =
+      λ x: Nat -> λ y: Nat -> λ p: (Eq Nat (Nat.S x) (Nat.S y)) ->
+        (ap Nat Nat pred (Nat.S x) (Nat.S y) p)
+  """
+])
 
 
 # ----------------------------
