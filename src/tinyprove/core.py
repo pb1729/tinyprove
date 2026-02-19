@@ -188,22 +188,30 @@ def whnf(term:Term, defns:Definitions) -> Term:
   return ans
 
 
-def conv(t1:Term, t2:Term, defns:Definitions) -> bool:
+def conv(t1:Term, t2:Term, defns:Definitions, accept_assignable:bool=False) -> bool:
+  """ Check structural equality for two terms. The check is exact and symmetric by
+      default, if accept_assignable is set, we instead check if t1 is assignable to t2. """
   t1 = whnf(t1, defns)
   t2 = whnf(t2, defns)
   match t1, t2:
     case Sort(l1), Sort(l2):
-      return l1 == l2
+      return l1 == l2 or (accept_assignable and l1 <= l2)
     case Var(depth1), Var(depth2):
       return depth1 == depth2
     case Const(name1), Const(name2):
       return name1 == name2
     case App(fn1, arg1), App(fn2, arg2):
-      return conv(fn1, fn2, defns) and conv(arg1, arg2, defns)
+      return (
+        conv(fn1, fn2, defns) and
+        conv(arg1, arg2, defns))
     case Pi(_, A1, B1), Pi(_, A2, B2):
-      return conv(A1, A2, defns) and conv(B1, B2, defns)
+      return ( # NOTE: we preserve the accept_assignable flag for Pi types
+        conv(A2, A1, defns, accept_assignable) and  # swap argument order to ensure contravariance
+        conv(B1, B2, defns, accept_assignable))     # output has same order for covariance
     case Lam(_, A1, body1), Lam(_, A2, body2):
-      return conv(A1, A2, defns) and conv(body1, body2, defns)
+      return (
+        conv(A2, A1, defns) and
+        conv(body1, body2, defns))
     case _:
       return False # mismatched shapes
 
@@ -249,10 +257,16 @@ def infer(term:Term, ctx, defns:Definitions) -> Term:
     case _:
       raise TypecheckError(f"Failed to recognize term {term}")
 
+
+
+def is_assignable(actual:Term, expected:Term, defns:Definitions) -> bool:
+  return conv(actual, expected, defns, accept_assignable=True)
+
+
 def check(term, expected, ctx, defns:Definitions):
-  term_ty = infer(term, ctx, defns)
-  if not conv(term_ty, expected, defns):
-    raise TypecheckError(f"Expected term {term.str(ctx)} to have type {expected.str(ctx)} but found {term_ty.str(ctx)}.")
+  actual = infer(term, ctx, defns)
+  if not is_assignable(actual, expected, defns):
+    raise TypecheckError(f"Term {term.str(ctx)} not assignable to type {expected.str(ctx)}.\nActual type was {actual.str(ctx)}.")
 
 
 
@@ -306,7 +320,7 @@ class ConstDefinition:
     self.value = whnf(value, defns)
     self.type = whnf(infer(self.value, [], defns), defns)
     if expected_ty is not None:
-      if not conv(self.type, expected_ty, defns):
+      if not is_assignable(self.type, expected_ty, defns):
         raise TypecheckError(f"When defining constant {self.name}, expected a type of {expected_ty.str([])} but actually got {self.type.str([])}.")
     self.used = find_used_defs(self.value)
   def get_type(self, key:List[str]) -> Term:
