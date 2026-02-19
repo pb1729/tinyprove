@@ -47,19 +47,33 @@ class DefsExtend:
   def __contains__(self, key:str) -> bool:
     return key in self.new_defs_dict or key in self.base_defns
   def match_reduce(self, key:str, argchain: List[Term], defns:Definitions) -> Tuple[Term, List[Term]] | None:
+    if key in self.new_defs_dict:
+      return None # Adding new reduction rules is not supported here
     return self.base_defns.match_reduce(key, argchain, defns)
 
 
-def typecheck_args(args:List[Tuple[str, IrNode]], ctx:List[Tuple[str, Term]], selfref_ir:IrNode, defns:Definitions):
+def type_level(ty:Term, ctx:List[Tuple[str, Term]], defns:Definitions):
+  """ Compute the effective universe level of a type. """
+  ty_whnf = whnf(ty, defns)
+  if isinstance(ty_whnf, Sort):
+    return ty_whnf.level
+  else:
+    ty_ty = whnf(infer(ty_whnf, ctx, defns), defns)
+    if not isinstance(ty_ty, Sort):
+      raise TypecheckError(f"Expected {ty.str(ctx)} to be a Sort but found type {ty_ty.str(ctx)}.")
+    return ty_ty.level
+
+
+def typecheck_args(args:List[Tuple[str, IrNode]], ctx:List[Tuple[str, Term]], selfref_ir:IrNode, defns:Definitions, max_level:int|None=None):
   """ Given a list of args that might be type parameters or constructor args,
       check that they are all some kind of Sort. Returns a full ctx containing all args. """
   if len(args) == 0: return ctx
   (arg_nm, arg_ty_ir), *args_rest = args
   arg_ty = selfref_sub(arg_ty_ir, selfref_ir).to_term(ctx_to_names(ctx))
-  arg_ty_ty = infer(arg_ty, ctx, defns)
-  if not isinstance(arg_ty_ty, Sort):
-    raise TypecheckError(f"Expected {arg_ty.str(ctx)} to be a Sort but found type {ty_ty.str(ctx)}.")
-  return typecheck_args(args_rest, [(arg_nm, arg_ty)] + ctx, selfref_ir, defns)
+  ty_level = type_level(arg_ty, ctx, defns) # typecheck and get the type's level
+  if max_level is not None and ty_level > max_level:
+    raise TypecheckError(f"Argument {arg_nm} is at the Type{ty_level} level but at most Type{max_level} would be sound.")
+  return typecheck_args(args_rest, [(arg_nm, arg_ty)] + ctx, selfref_ir, defns, max_level)
 
 
 @dataclass(frozen=True)
@@ -141,7 +155,7 @@ class ConstructorDef:
     self.args = args
     self.output_indices = output_indices
     # type & positivity checking:
-    constructor_ctx = typecheck_args(self.args, self.indty.params_ctx, self.indty.selfref_ir, self.indty.defns_ext)
+    constructor_ctx = typecheck_args(self.args, self.indty.params_ctx, self.indty.selfref_ir, self.indty.defns_ext, self.indty.get_level())
     self.check_positive()
     self.check_output_indices(constructor_ctx, self.indty.inds_ctx)
     # prep data that will be used by match-reduce
@@ -252,6 +266,8 @@ class InductiveDef:
       IrConst(self.name),
       [IrVar(nm) for nm, _ in self.params]
     )
+  def get_level(self) -> int:
+    return self.sort.level
   def get_index_vars(self) -> List[IrNode]:
     """ Get a list of vars corresponding to this inductive's indices.
         Note: Assumes that the vars will be present somewhere in the context. """
@@ -345,8 +361,6 @@ class InductiveDef:
             return None
       case _: # callee is not .ind
         return None
-
-
 
 
 
