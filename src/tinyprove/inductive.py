@@ -52,28 +52,33 @@ class DefsExtend:
     return self.base_defns.match_reduce(key, argchain, defns)
 
 
-def type_level(ty:Term, ctx:List[Tuple[str, Term]], defns:Definitions):
+def type_level(ty_whnf:Term, ctx:List[Tuple[str, Term]], defns:Definitions):
   """ Compute the effective universe level of a type. """
-  ty_whnf = whnf(ty, defns)
   if isinstance(ty_whnf, Sort):
     return ty_whnf.level
   else:
     ty_ty = whnf(infer(ty_whnf, ctx, defns), defns)
     if not isinstance(ty_ty, Sort):
-      raise TypecheckError(f"Expected {ty.str(ctx)} to be a Sort but found type {ty_ty.str(ctx)}.")
+      raise TypecheckError(f"Expected {ty_whnf.str(ctx)} to be a Sort but found type {ty_ty.str(ctx)}.")
     return ty_ty.level
 
 
-def typecheck_args(args:List[Tuple[str, IrNode]], ctx:List[Tuple[str, Term]], selfref_ir:IrNode, defns:Definitions, max_level:int|None=None):
+def typecheck_args(args:List[Tuple[str, IrNode]], ctx:List[Tuple[str, Term]], selfref_ir:IrNode, defns:Definitions,
+    max_level:int|None=None, positive_typenm:str|None=None):
   """ Given a list of args that might be type parameters or constructor args,
       check that they are all some kind of Sort. Returns a full ctx containing all args. """
   if len(args) == 0: return ctx
   (arg_nm, arg_ty_ir), *args_rest = args
   arg_ty = selfref_sub(arg_ty_ir, selfref_ir).to_term(ctx_to_names(ctx))
-  ty_level = type_level(arg_ty, ctx, defns) # typecheck and get the type's level
-  if max_level is not None and ty_level > max_level:
+  arg_ty_whnf = whnf(arg_ty, defns)
+  ty_level = type_level(arg_ty_whnf, ctx, defns) # typecheck and get the type's level
+  if max_level is not None and ty_level > max_level: # ensure constructor arguments lie within the correct universe
     raise TypecheckError(f"Argument {arg_nm} is at the Type{ty_level} level but at most Type{max_level} would be sound.")
-  return typecheck_args(args_rest, [(arg_nm, arg_ty)] + ctx, selfref_ir, defns, max_level)
+  if positive_typenm is not None: # do a positivity check if a typename that must be positive was specificed
+    if not all(walk(positive_typenm, arg_ty_whnf, defns)):
+      raise DefinitionError(f"Constructor arg {arg_nm} fails positivity check.")
+  return typecheck_args(args_rest, [(arg_nm, arg_ty)] + ctx, selfref_ir, defns,
+    max_level, positive_typenm)
 
 
 @dataclass(frozen=True)
@@ -122,28 +127,31 @@ def selfref_sub(node:IrNode, selfref_ir:IrNode) -> IrNode:
       raise DefinitionError("Unknown node type.")
 
 
-def walk(indty_name: str, node:IrNode, polarity:bool=True) -> bool:
-  """ Do a polarity check of node to ensure that self-references to our inductive type are positive only.
+def walk(indty_name: str, arg_ty:Term, defns:Definitions, polarity:bool=True) -> List[bool]:
+  """ Do a polarity check of node and returns a list of polarities of self-references.
       polarity: True = positive, and False = negative """
-  match node:
-    case IrLam():
+  arg_ty = whnf(arg_ty, defns)
+  match arg_ty:
+    case Lam():
       raise DefinitionError("Lambdas not supported in constructor definition.")
-    case IrPi(param, A, B):
-      return walk(indty_name, A, not polarity) and walk(indty_name, B, polarity)
-    case IrApp(fn, arg):
-      return walk(indty_name, fn, polarity) and walk(indty_name, arg, polarity)
-    case IrSort():
-      return True
-    case IrVar(nm):
-      return True
-    case IrConst(name):
+    case Pi(param, A, B):
+      return walk(indty_name, A, defns, not polarity) + walk(indty_name, B, defns, polarity)
+    case App(fn, arg):
+      arg_appearances = [
+        False # this application could produce a result where the inductive type appears negatively
+        for _ in walk(indty_name, arg, defns, polarity)
+      ]
+      return walk(indty_name, fn, defns, polarity) + arg_appearances
+    case Sort():
+      return []
+    case Var():
+      return []
+    case Const(name):
       if name == indty_name:
-        raise DefinitionError("Found an IrConst that refers back to the original inductive type! This should be done solely with IrInductiveSelfRef.")
-      return True
-    case IrInductiveSelfRef(index_vals):
-      return polarity
+        return [polarity]
+      return []
     case _:
-      raise DefinitionError("Unknown node type.")
+      raise DefinitionError("Unknown term.")
 
 
 class ConstructorDef:
@@ -155,8 +163,8 @@ class ConstructorDef:
     self.args = args
     self.output_indices = output_indices
     # type & positivity checking:
-    constructor_ctx = typecheck_args(self.args, self.indty.params_ctx, self.indty.selfref_ir, self.indty.defns_ext, self.indty.get_level())
-    self.check_positive()
+    constructor_ctx = typecheck_args(self.args, self.indty.params_ctx, self.indty.selfref_ir, self.indty.defns_ext,
+      max_level=self.indty.get_level(), positive_typenm=self.indty.name)
     self.check_output_indices(constructor_ctx, self.indty.inds_ctx)
     # prep data that will be used by match-reduce
     self.matchred_sig = self.get_matchred_sig()
@@ -190,10 +198,6 @@ class ConstructorDef:
           self.output_indices),
         applied_constructor_ty),
       converted_args[::-1])
-  def check_positive(self):
-    for arg_nm, arg_ty in self.args:
-      if not walk(self.indty.name, arg_ty):
-        raise DefinitionError(f"Constructor {self.name} arg {arg_nm} fails positivity check.")
   def check_output_indices(self, constructor_ctx:List[Tuple[str, Term]], inds_ctx:List[Tuple[str, Term]]):
     num_inds = len(self.indty.indices)
     assert len(self.output_indices) == num_inds, f"Constructor {self.name} definition has incorrect number of output indices."
