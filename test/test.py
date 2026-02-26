@@ -288,7 +288,7 @@ test("1 != 0",
   (Eq.ind.0 Nat (Nat.S Nat.Z)
     (λ y: Nat -> λ instance: (Eq Nat (Nat.S Nat.Z) y) -> (isSucc y))   # motive
     Unit.in                                                            # case refl : isSucc 1, reduces to Unit
-    Nat.Z"                                                             # y := 0
+    Nat.Z                                                              # y := 0
     p
   )
 """

@@ -16,14 +16,23 @@ _token_re = re.compile(
       [\[\]()\|,:=λΠδι]|              # punctuation (unicode lambdas, etc.)
       """ + _ident_re + """           # identifiers
   )
+  \s*                                 # skip trailing whitespace
   """,
   re.VERBOSE,
 )
 
 
 def _tokenise(src: str) -> List[str]:
-  """Return a *list* of string tokens (whitespace already stripped)."""
-  return [m.group(1) for m in _token_re.finditer(src)]
+  """ Return a list of string tokens (whitespace already stripped). """
+  pos = 0
+  ans = []
+  while pos < len(src):
+    m = _token_re.match(src, pos)
+    if not m:
+      raise SyntaxError(f"Unexpected character at position {pos}: {repr(src[pos])}")
+    ans.append(m.group(1))
+    pos = m.end()
+  return ans
 
 
 def strip_comments(src:str) -> str:
