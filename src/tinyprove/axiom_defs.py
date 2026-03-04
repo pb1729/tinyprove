@@ -1,18 +1,22 @@
 from typing import List
 
-from .ir import *
 from .parser import parse, parse_ir
-from .core import Definitions, AxiomDefinition
-from .inductive import InductiveDef, IrConstructorDefinition, IrInductiveSelfRef
-
+from .core import Definitions, AxiomDefinition, TypecheckError
+from .inductive import InductiveDef, IrConstructorDefinition, IrInductiveSelfRef, DefinitionError
 
 
 def extend_definitions(defns:Definitions, src:List[str]):
   """ MUTATES defns by adding all definitions from src """
   for defn_str in src:
-    defn_ir = parse_ir(defn_str)
+    try:
+      defn_ir = parse_ir(defn_str)
+    except SyntaxError as e:
+      raise DefinitionError(f"{e.args[0]}\nin definition\n{defn_str}") from e
     if hasattr(defn_ir, "to_definition"):
-      defns.add(defn_ir.to_definition(defns))
+      try:
+        defns.add(defn_ir.to_definition(defns))
+      except (TypecheckError, DefinitionError) as e:
+        raise DefinitionError(f"{e.args[0]}\nin definition\n{defn_str}") from e
     else:
       raise RuntimeError(f"The following code does not constitute a definition:\n{defn_str}")
 
