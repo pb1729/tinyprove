@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Set
-from enum import Enum
 
 
 
 class TypecheckError(Exception):
   pass
+
+
+
 
 
 # ---- Term AST and DeBruijn Manipulations: ----

@@ -24,7 +24,8 @@ class Term:
 
 class Env:
   """ environments are trees of upwards refs, rooted at EmptyEnv() """
-  pass
+  def __getitem__(self, idx):
+    return self.at(idx)
 
 
 # Term concrete classes:
@@ -32,22 +33,22 @@ class Env:
 @dataclass(frozen=True)
 class TVar(Term):
   idx: int
-  def str(self, ctx:list[str]):
-    return ctx[len(ctx) - 1 - self.idx]
+  def str(self, ctx:Env):
+    return ctx[self.idx]
 
 @dataclass(frozen=True)
 class TApp(Term):
   head: Term
   arg: Term
-  def str(self, ctx:list[str]):
+  def str(self, ctx:Env):
     return f"({self.head.str(ctx)} {self.arg.str(ctx)})"
 
 @dataclass(frozen=True)
 class TLam(Term):
   body: Term
-  def str(self, ctx:list[str]):
+  def str(self, ctx:Env):
     param_nm = f"x{len(ctx)}"
-    ctx_new = ctx + [param_nm]
+    ctx_new = EnvEntry(ctx, param_nm)
     body_str = self.body.str(ctx_new)
     return f"(λ {param_nm} -> {body_str})"
 
@@ -56,18 +57,26 @@ class TLam(Term):
 
 @dataclass(frozen=True)
 class EmptyEnv(Env):
-  def at(self, idx:int):
+  def at(self, idx:int) -> object:
     raise LookupError(f"Tried to look up {idx} from EmptyEnv.")
+  def __len__(self) -> int:
+    return 0
 
 @dataclass(frozen=True)
 class EnvEntry(Env):
   prev: Env
-  val: Binding
-  def at(self, idx:int):
+  val: object
+  def at(self, idx:int) -> object:
     if idx == 0:
       return self.val
     else:
       return self.prev.at(idx - 1)
+  def __len__(self) -> int:
+    return 1 + len(self.prev)
+
+# Environment types:
+#   - Value environment.      val: Binding
+#   - Variable name context.  val: str
 
 
 # Thunks and Closures
