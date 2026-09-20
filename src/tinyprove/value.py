@@ -1,3 +1,4 @@
+from __future__ import annotations
 from dataclasses import dataclass, field
 
 
@@ -39,12 +40,18 @@ class TSort(Term):
     return f"Type{self.level}"
 
 @dataclass(frozen=True)
+class TConst(Term):
+  path: tuple[str, ...]
+  def str(self, ctx:Env):
+    return ".".join(self.path)
+
+@dataclass(frozen=True)
 class TVar(Term):
   idx: int
   def str(self, ctx:Env):
     name = ctx[self.idx]
     skipped = sum(ctx[i] == name for i in range(self.idx))
-    return name + "'" * skipped
+    return name + "'" * skipped # add ticks to disambiguate collisions
 
 @dataclass(frozen=True)
 class TApp(Term):
@@ -115,26 +122,67 @@ class LazyEnvMap:
 #   - Variable name context.  val: str
 
 
+# Modules
+
+class Module:
+  """ Names map to checked (Binding, Value) pairs or module-like objects.
+      Submodules need only support tuple-path lookup via __getitem__. """
+  def __init__(self):
+    self.entries = {}
+  def __getitem__(self, path:tuple[str, ...]) -> tuple[Binding, Value]:
+    if not path:
+      raise LookupError("A constant path must be nonempty.")
+    name, *rest = path
+    if name not in self.entries:
+      raise LookupError(f"Unknown name {name}.")
+    entry = self.entries[name]
+    if isinstance(entry, tuple):
+      if rest: raise LookupError(f"Constant {name} is not a module.")
+      return entry
+    else:
+      return entry[tuple(rest)]
+  def add(self, name:str, entry:tuple[Binding, Value]|Module):
+    """ Add an already checked entry or an imported module.
+        MUTATES self. """
+    if name in self.entries: raise ValueError(f"Name {name} is already defined in this module.")
+    self.entries[name] = entry
+
+def define(module:Module, name:str, term:Term, expected:Term|None):
+  """ Check a closed definition and add it to module.
+      MUTATES module. """
+  if expected is None:
+    ty = infer(term, EmptyEnv(), module)
+  else:
+    infer_sort(expected, EmptyEnv(), module)
+    ty = term_eval(expected, EmptyEnv(), module)
+    check(term, ty, EmptyEnv(), module)
+  entry = (Thunk(term, EmptyEnv(), module), ty)
+  module.add(name, entry)
+  return entry
+
+
 # Thunks and Closures
 
 @dataclass
 class Thunk(Binding):
-  """ A term and its environment, with cache for lazy and repeated evaluation. """
+  """ A term with its local environment and defining module, evaluated lazily. """
   term: Term
   env: Env
+  module: Module
   cached:(Value|None) = None
   def force(self):
     if self.cached is None:
-      self.cached = term_eval(self.term, self.env)
+      self.cached = term_eval(self.term, self.env, self.module)
     return self.cached
 
 @dataclass(frozen=True)
 class Closure:
-  """ A term and its environment, accepts an argument """
+  """ A term with its local environment and defining module; accepts an argument. """
   term: Term
   env: Env
+  module: Module
   def apply(self, arg:Binding) -> Value:
-    return term_eval(self.term, EnvEntry(self.env, arg))
+    return term_eval(self.term, EnvEntry(self.env, arg), self.module)
 
 
 # Value concrete classes:
@@ -170,20 +218,22 @@ def vapp(fn:Value, arg:Binding) -> Value:
     case _:
       raise EvalError(f"Unknown value {fn}")
 
-def term_eval(term: Term, env: Env) -> Value:
+def term_eval(term:Term, env:Env, module:Module) -> Value:
   match term:
     case TSort(level) if level >= 0:
       return VSort(level)
+    case TConst(path):
+      return module[path][0].force()
     case TVar(idx):
       return env.at(idx).force()
     case TApp(head, arg):
-      head_val = term_eval(head, env)
-      arg_bind = Thunk(arg, env)
+      head_val = term_eval(head, env, module)
+      arg_bind = Thunk(arg, env, module)
       return vapp(head_val, arg_bind)
     case TLam(_, _, body):
-      return VLam(Closure(body, env))
+      return VLam(Closure(body, env, module))
     case TPi(_, A, B):
-      return VPi(Thunk(A, env), Closure(B, env))
+      return VPi(Thunk(A, env, module), Closure(B, env, module))
     case _:
       raise EvalError(f"Unknown term {term}")
 
@@ -249,48 +299,53 @@ def debug_str(term:Term, ctx:Env) -> str:
   return term.str(LazyEnvMap(ctx, ann_name))
 
 
-def infer_sort(term:Term, ctx:Env) -> int:
-  ty = infer(term, ctx)
+def infer_sort(term:Term, ctx:Env, module:Module) -> int:
+  ty = infer(term, ctx, module)
   if not isinstance(ty, VSort):
     raise TypecheckError(f"Expected a type, got {debug_str(term, ctx)}.")
   return ty.level
 
 
-def infer(term:Term, ctx:Env=EmptyEnv()) -> Value:
+def infer(term:Term, ctx:Env, module:Module) -> Value:
   """ Infer a semantic type.
       Context entries are (value, type, name) annotations. """
   depth = len(ctx)
   match term:
     case TSort(level) if level >= 0:
       return VSort(level + 1)
+    case TConst(path):
+      try:
+        return module[path][1]
+      except LookupError as error:
+        raise TypecheckError(f"Cannot resolve {'.'.join(path)}: {error}") from error
     case TVar(idx):
       if not 0 <= idx < depth:
         raise TypecheckError(f"Variable index {idx} outside context of size {depth}.")
       return ann_ty(ctx[idx])
     case TPi(param, A, B):
-      level_A = infer_sort(A, ctx)
-      domain = term_eval(A, LazyEnvMap(ctx, ann_val))
-      level_B = infer_sort(B, EnvEntry(ctx, (VNeutral(depth, ()), domain, param)))
+      level_A = infer_sort(A, ctx, module)
+      domain = term_eval(A, LazyEnvMap(ctx, ann_val), module)
+      level_B = infer_sort(B, EnvEntry(ctx, (VNeutral(depth, ()), domain, param)), module)
       return VSort(max(level_A, level_B))
     case TLam(_, None, _):
       raise TypecheckError(f"Cannot infer an unannotated lambda: {debug_str(term, ctx)}.")
     case TLam(param, A, body):
       env = LazyEnvMap(ctx, ann_val)
-      infer_sort(A, ctx)
-      domain = term_eval(A, env)
-      body_ty = infer(body, EnvEntry(ctx, (VNeutral(depth, ()), domain, param)))
-      return VPi(domain, Closure(quote(body_ty, depth + 1), env)) # call quote because Closure needs a Term
+      infer_sort(A, ctx, module)
+      domain = term_eval(A, env, module)
+      body_ty = infer(body, EnvEntry(ctx, (VNeutral(depth, ()), domain, param)), module)
+      return VPi(domain, Closure(quote(body_ty, depth + 1), env, module)) # call quote because Closure needs a Term
     case TApp(fn, arg):
-      fn_ty = infer(fn, ctx)
+      fn_ty = infer(fn, ctx, module)
       if not isinstance(fn_ty, VPi):
         raise TypecheckError(f"Expected a function, got {debug_str(fn, ctx)}.")
-      check(arg, fn_ty.A.force(), ctx)
-      return fn_ty.B.apply(Thunk(arg, LazyEnvMap(ctx, ann_val)))
+      check(arg, fn_ty.A.force(), ctx, module)
+      return fn_ty.B.apply(Thunk(arg, LazyEnvMap(ctx, ann_val), module))
     case _:
       raise TypecheckError(f"Invalid term {term!r}.")
 
 
-def check(term:Term, expected:Value, ctx:Env=EmptyEnv()):
+def check(term:Term, expected:Value, ctx:Env, module:Module):
   """ Check against a well-formed semantic type.
       Lambdas use the expected codomain directly; other terms use inference. """
   depth = len(ctx)
@@ -299,15 +354,15 @@ def check(term:Term, expected:Value, ctx:Env=EmptyEnv()):
       if A is None:
         domain = C.force() # infer domain from the expected type
       else:
-        infer_sort(A, ctx)
-        domain = term_eval(A, LazyEnvMap(ctx, ann_val))
+        infer_sort(A, ctx, module)
+        domain = term_eval(A, LazyEnvMap(ctx, ann_val), module)
         # Preserve Pi assignability: the expected domain is assignable to A.
         if not conv(C, domain, depth, accept_assignable=True):
           raise TypecheckError(f"Parameter type {debug_str(A, ctx)} does not accept the expected domain.")
       x = VNeutral(depth, ())
-      check(body, D.apply(x), EnvEntry(ctx, (x, domain, param)))
+      check(body, D.apply(x), EnvEntry(ctx, (x, domain, param)), module)
     case _: # infer-and-compare checking
-      actual = infer(term, ctx)
+      actual = infer(term, ctx, module)
       if not conv(actual, expected, depth, accept_assignable=True):
         raise TypecheckError(f"Expected {debug_str(quote(expected, depth), ctx)}, "
           f"inferred {debug_str(quote(actual, depth), ctx)}.")
@@ -318,6 +373,4 @@ def check(term:Term, expected:Value, ctx:Env=EmptyEnv()):
 # maybe allow annotations?
 # also, for top level defs, we should not require the δ. now that things are comma separated.
 # that way it's consistent with let statement syntax
-
-
 
