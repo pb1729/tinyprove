@@ -80,6 +80,19 @@ class TPi(Term):
     ctx_new = EnvEntry(ctx, self.param)
     return f"(Π {self.param}: {self.A.str(ctx)} => {self.B.str(ctx_new)})"
 
+@dataclass(frozen=True)
+class TLet(Term):
+  name: str = field(compare=False)
+  A: Term | None
+  rhs: Term
+  body: Term
+  def str(self, ctx:Env):
+    ctx_new = EnvEntry(ctx, self.name)
+    rhs_str = self.rhs.str(ctx)
+    body_str = self.body.str(ctx_new)
+    annotation = "" if self.A is None else f": {self.A.str(ctx)}"
+    return f"{{ {self.name}{annotation} = {rhs_str},\n{body_str} }}"
+
 
 # Env concrete classes:
 
@@ -146,6 +159,14 @@ class Module:
         MUTATES self. """
     if name in self.entries: raise ValueError(f"Name {name} is already defined in this module.")
     self.entries[name] = entry
+
+# a def in a Module is a (value, type) pair
+def def_val(defn):
+  val, ty = defn
+  return val
+def def_ty(defn):
+  val, ty = defn
+  return ty
 
 def define(module:Module, name:str, term:Term, expected:Term|None):
   """ Check a closed definition and add it to module.
@@ -223,7 +244,7 @@ def term_eval(term:Term, env:Env, module:Module) -> Value:
     case TSort(level) if level >= 0:
       return VSort(level)
     case TConst(path):
-      return module[path][0].force()
+      return def_val(module[path]).force()
     case TVar(idx):
       return env.at(idx).force()
     case TApp(head, arg):
@@ -234,6 +255,9 @@ def term_eval(term:Term, env:Env, module:Module) -> Value:
       return VLam(Closure(body, env, module))
     case TPi(_, A, B):
       return VPi(Thunk(A, env, module), Closure(B, env, module))
+    case TLet(_, _, rhs, body):
+      rhs_bind = Thunk(rhs, env, module)
+      return Closure(body, env, module).apply(rhs_bind)
     case _:
       raise EvalError(f"Unknown term {term}")
 
@@ -306,6 +330,25 @@ def infer_sort(term:Term, ctx:Env, module:Module) -> int:
   return ty.level
 
 
+def get_let_body_term(let_term:TLet, ctx:Env, module:Module) -> tuple[Term, Env]:
+  """ Typecheck the assignment part of a let statement.
+      Returns the body term and an updated ctx containing the rhs. """
+  match let_term:
+    case TLet(name, A, rhs, body):
+      env = LazyEnvMap(ctx, ann_val)
+      if A is None:
+        domain = infer(rhs, ctx, module)
+      else:
+        infer_sort(A, ctx, module)
+        domain = term_eval(A, env, module)
+        check(rhs, domain, ctx, module)
+      rhs_bind = Thunk(rhs, env, module)
+      body_ctx = EnvEntry(ctx, (rhs_bind, domain, name))
+      return body, body_ctx
+    case _:
+      raise TypecheckError(f"Invalid Let term {let_term!r}.")
+
+
 def infer(term:Term, ctx:Env, module:Module) -> Value:
   """ Infer a semantic type.
       Context entries are (value, type, name) annotations. """
@@ -330,6 +373,7 @@ def infer(term:Term, ctx:Env, module:Module) -> Value:
     case TLam(_, None, _):
       raise TypecheckError(f"Cannot infer an unannotated lambda: {debug_str(term, ctx)}.")
     case TLam(param, A, body):
+      print("used quote during type inference") # TODO: remove this at some point
       env = LazyEnvMap(ctx, ann_val)
       infer_sort(A, ctx, module)
       domain = term_eval(A, env, module)
@@ -341,6 +385,9 @@ def infer(term:Term, ctx:Env, module:Module) -> Value:
         raise TypecheckError(f"Expected a function, got {debug_str(fn, ctx)}.")
       check(arg, fn_ty.A.force(), ctx, module)
       return fn_ty.B.apply(Thunk(arg, LazyEnvMap(ctx, ann_val), module))
+    case TLet(_, _, _, _):
+      body, body_ctx = get_let_body_term(term, ctx, module)
+      return infer(body, body_ctx, module)
     case _:
       raise TypecheckError(f"Invalid term {term!r}.")
 
@@ -361,6 +408,10 @@ def check(term:Term, expected:Value, ctx:Env, module:Module):
           raise TypecheckError(f"Parameter type {debug_str(A, ctx)} does not accept the expected domain.")
       x = VNeutral(depth, ())
       check(body, D.apply(x), EnvEntry(ctx, (x, domain, param)), module)
+    case TLet(_, _, _, _), _:
+      # expected type must be able to pass through let expressions for bi-directionality
+      body, body_ctx = get_let_body_term(term, ctx, module)
+      check(body, expected, body_ctx, module)
     case _: # infer-and-compare checking
       actual = infer(term, ctx, module)
       if not conv(actual, expected, depth, accept_assignable=True):
