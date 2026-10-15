@@ -1,339 +1,503 @@
-from dataclasses import dataclass
-from typing import List, Dict, Tuple, Set
+from __future__ import annotations
+from dataclasses import dataclass, field
 
 
-
+class LookupError(Exception):
+  pass
+class EvalError(Exception):
+  pass
 class TypecheckError(Exception):
+  pass
+class DefinitionError(Exception):
   pass
 
 
+# Base classes:
 
+class Binding:
+  """ Value or Thunk or Axiom """
+  pass
 
+class Value(Binding):
+  """ Base class for the result of an expression """
+  def force(self) -> Value:
+    return self
 
-# ---- Term AST and DeBruijn Manipulations: ----
+class Axiom(Binding):
+  """ A binding with constructive/computational content. Raises an Error when forced. """
+  def force(self) -> Value:
+    raise EvalError("Can't force an Axiom.")
 
 class Term:
-  """ Base class for tinyprove AST. """
-  def __str__(self):
-    return self.str([])
+  """ Base class for an expression in the language """
+  pass
+
+class Env:
+  """ environments are trees of upwards refs, rooted at EmptyEnv() """
+  def __getitem__(self, idx):
+    return self.at(idx)
+
+
+# Term concrete classes:
 
 @dataclass(frozen=True)
-class Sort(Term):
+class TSort(Term):
   level: int
-  def str(self, ctx):
+  def str(self, ctx:Env):
     return f"Type{self.level}"
-  def shift(self, shift, keep=0):
-    return self
-  def subst(self, j, term):
-    return self
 
 @dataclass(frozen=True)
-class Const(Term):
-  name: str
-  def str(self, ctx):
-    return self.name
-  def shift(self, shift, keep=0):
-    return self
-  def subst(self, j, term):
-    return self
+class TConst(Term):
+  module: Module
+  path: tuple[str, ...]
+  def str(self, ctx:Env):
+    return f"[Module {id(self.module)}].{'.'.join(self.path)}"
+  def _get_def_id(self):
+    """ Use python's id builtin to get this definition's unique id. """
+    return id(self.module[self.path])
 
 @dataclass(frozen=True)
-class Var(Term):
-  depth: int
-  def str(self, ctx):
-    if self.depth < len(ctx):
-      return ctx[self.depth][0]
-    else:
-      return f"^{self.depth}"
-  def shift(self, shift, keep=0):
-    if self.depth < keep: return self
-    return Var(self.depth + shift)
-  def subst(self, j, term):
-    if self.depth == j:
-      return term
-    if self.depth > j:
-      return Var(self.depth - 1) # substitution removes a variable
-    return self
+class TVar(Term):
+  idx: int
+  def str(self, ctx:Env):
+    name = ctx[self.idx]
+    skipped = sum(ctx[i] == name for i in range(self.idx))
+    return name + "'" * skipped # add ticks to disambiguate collisions
 
 @dataclass(frozen=True)
-class Pi(Term):
-  param: str
+class TApp(Term):
+  head: Term
+  arg: Term
+  def str(self, ctx:Env):
+    return f"({self.head.str(ctx)} {self.arg.str(ctx)})"
+
+@dataclass(frozen=True)
+class TLam(Term):
+  param: str = field(compare=False)
+  A: Term | None
+  body: Term
+  def str(self, ctx:Env):
+    ctx_new = EnvEntry(ctx, self.param)
+    body_str = self.body.str(ctx_new)
+    annotation = "" if self.A is None else f": {self.A.str(ctx)}"
+    return f"(λ {self.param}{annotation} -> {body_str})"
+
+@dataclass(frozen=True)
+class TPi(Term):
+  param: str = field(compare=False)
   A: Term
   B: Term
-  def str(self, ctx):
-    return f"(Π {self.param}: {self.A.str(ctx)} => {self.B.str([(self.param, None)] + ctx)})"
-  def shift(self, shift, keep=0):
-    return Pi(self.param, self.A.shift(shift, keep), self.B.shift(shift, keep + 1)) # keep param
-  def subst(self, j, term):
-    return Pi(self.param, self.A.subst(j, term), self.B.subst(j + 1, term.shift(1)))
+  def str(self, ctx:Env):
+    ctx_new = EnvEntry(ctx, self.param)
+    return f"(Π {self.param}: {self.A.str(ctx)} => {self.B.str(ctx_new)})"
 
 @dataclass(frozen=True)
-class Lam(Term):
-  param: str
-  A: Term
+class TLet(Term):
+  name: str = field(compare=False)
+  A: Term | None
+  rhs: Term
   body: Term
-  def str(self, ctx):
-    return f"(λ {self.param}: {self.A.str(ctx)} -> {self.body.str([(self.param, None)] + ctx)})"
-  def shift(self, shift, keep=0):
-    return Lam(self.param, self.A.shift(shift, keep), self.body.shift(shift, keep + 1)) # keep param
-  def subst(self, j, term):
-    return Lam(self.param, self.A.subst(j, term), self.body.subst(j + 1, term.shift(1)))
+  def str(self, ctx:Env):
+    ctx_new = EnvEntry(ctx, self.name)
+    rhs_str = self.rhs.str(ctx)
+    body_str = self.body.str(ctx_new)
+    annotation = "" if self.A is None else f": {self.A.str(ctx)}"
+    return f"{{ {self.name}{annotation} = {rhs_str},\n{body_str} }}"
 
-'''
-@dataclass(frozen=True)
-class Let(Term):
-  param:str
-  val: Term
-  body: Term
-  def str(self, ctx):
-    return f"let {self.param} = {self.val.str(ctx)}; {self.body.str([(self.param, None)] + ctx)}"
-  def shift(self, shift, keep=0):
-    return Let(self.param, self.val.shift(shift, keep), self.body.shift(shift, keep + 1))
-  def subst(self, j, term):
-    return Let(self.param, self.val.subst(j, term), self.body.subst(j + 1, term.shift(1)))
-'''
+
+# Env concrete classes:
 
 @dataclass(frozen=True)
-class App(Term):
-  fn: Term
-  arg: Term
-  def str(self, ctx):
-    return f"({self.fn.str(ctx)} {self.arg.str(ctx)})"
-  def shift(self, shift, keep=0):
-    return App(self.fn.shift(shift, keep), self.arg.shift(shift, keep))
-  def subst(self, j, term):
-    return App(self.fn.subst(j, term), self.arg.subst(j, term))
+class EmptyEnv(Env):
+  def at(self, idx:int) -> object:
+    raise LookupError(f"Tried to look up {idx} from EmptyEnv.")
+  def __len__(self) -> int:
+    return 0
+  def index_of(self, val:object, ans:int=0) -> int:
+    return -1 # not found
 
-
-# ---- Proof Environment: ----
-
-class Definitions:
-  """ An environment class that holds various kinds of definitions that are referenced by Const terms. """
-  def __init__(self):
-    self.defs = {}
-  def add(self, definition):
-    def_name = definition.name
-    if "." in def_name:
-      raise RuntimeError(f"{def_name} is not a legal definition name, as these cannot contain the `.` separator.")
-    if def_name in self.defs:
-      raise RuntimeError(f"Can't add another definition with the same name ({def_name}) as an existing one.")
-    self.defs[def_name] = definition
-  def remove(self, def_name:str):
-    if def_name not in self.defs:
-      raise RuntimeError(f"No definition named {def_name} was found.")
-    is_being_used = any(
-      def_name in definition.used
-      for definition in self.defs.values()
-    )
-    if is_being_used:
-      raise RuntimeError(f"Definition {def_name} is currently in use by other definitions in this environment.")
-    del self.defs[def_name]
-  def __getitem__(self, key:str) -> Term:
-    assert isinstance(key, str)
-    name, *rest = key.split(".")
-    return self.defs[name].get_type(rest)
-  def __contains__(self, key:str) -> bool:
-    try:
-      self[key]
-    except KeyError:
-      return False
+@dataclass(frozen=True)
+class EnvEntry(Env):
+  prev: Env
+  val: object
+  def at(self, idx:int) -> object:
+    if idx == 0:
+      return self.val
     else:
-      return True
-  def match_reduce(self, key:str, argchain: List[Term], defns) -> Tuple[Term, List[Term]] | None:
-    name, *rest = key.split(".")
-    return self.defs[name].match_reduce(rest, argchain, defns)
+      return self.prev.at(idx - 1)
+  def __len__(self) -> int:
+    return 1 + len(self.prev)
+  def index_of(self, val:object, ans:int=0) -> int:
+    if val == self.val:
+      return ans
+    else:
+      return self.prev.index_of(val, 1 + ans)
+
+@dataclass(frozen=True)
+class LazyEnvMap:
+  """ Maps an Env to another effective env via a mapping function.
+      The mapping function is called only when an element is retrieved.
+      Duck types to Env. """
+  env: Env
+  mapfn: object # callable
+  def at(self, idx:int) -> object:
+    return self.mapfn(self.env.at(idx))
+  def __len__(self) -> int:
+    return len(self.env)
+  def __getitem__(self, idx):
+    return self.at(idx)
+
+# Environment types:
+#   - Value environment.      val: Binding
+#   - Typing context.         val: (Binding, Value, str)
+#   - Variable name context.  val: str
+
+# a context annotation is a (value, type, name) tuple
+def ann_val(ann:tuple[Binding, Value, str]) -> Binding:
+  value, ty, name = ann
+  return value
+def ann_ty(ann:tuple[Binding, Value, str]) -> Value:
+  value, ty, name = ann
+  return ty
+def ann_name(ann:tuple[Binding, Value, str]) -> str:
+  value, ty, name = ann
+  return name
+
+# Modules
+
+class Module:
+  """ Constants are (Binding, Value) pairs. They and submodules have separate namespaces.
+      Submodules must subclass Module and support tuple-path lookup via __getitem__. """
+  def __init__(self):
+    self.entries = {}
+    self.submodules = {}
+  def __getitem__(self, path:tuple[str, ...]) -> tuple[Binding, Value]:
+    if not path:
+      raise LookupError("A constant path must be nonempty.")
+    name, *rest = path
+    if rest:
+      if name not in self.submodules:
+        raise LookupError(f"No submodule named {name}.")
+      return self.submodules[name][tuple(rest)]
+    else:
+      if name not in self.entries:
+        raise LookupError(f"No constant named {name}.")
+      return self.entries[name]
+  def add(self, name:str, entry:tuple[Binding, Value]|Module):
+    """ Add an already checked entry or an imported module.
+        MUTATES self. """
+    if isinstance(entry, Module):
+      if name in self.submodules:
+        raise DefinitionError(f"A submodule named {name} already exists.")
+      self.submodules[name] = entry
+    else:
+      if name in self.entries:
+        raise DefinitionError(f"A constant named {name} already exists.")
+      self.entries[name] = entry
+
+# a def in a Module is a (value, type) pair
+def def_val(defn:tuple[Value, Value]) -> Value:
+  val, ty = defn
+  return val
+def def_ty(defn:tuple[Value, Value]) -> Value:
+  val, ty = defn
+  return ty
+
+def define(module:Module, name:str, term:Term, expected:Term|None):
+  """ Check a closed definition and add it to module.
+      MUTATES module. """
+  if expected is None:
+    ty = infer(term, EmptyEnv())
+  else:
+    infer_sort(expected, EmptyEnv())
+    ty = term_eval(expected, EmptyEnv())
+    check(term, ty, EmptyEnv())
+  entry = (Thunk(term, EmptyEnv()), ty)
+  module.add(name, entry)
+  return entry
 
 
-# ---- WHNF Reduction and Type-checking / Inference: ----
+# Thunks and Closures
 
-def to_app_list(term:Term) -> Tuple[Term, List[Term]]:
+@dataclass
+class Cache:
+  """ Saves an answer computed once for later. """
+  full:bool = False
+  data:object|None = None
+  def is_empty(self):
+    return not self.full
+  def set(self, data:object):
+    assert not self.full, "Can't overwrite full Cache"
+    self.full = True
+    self.data = data
+  def get(self):
+    assert self.full, "Can't retrieve from empty Cache"
+    return self.data
+
+@dataclass
+class Thunk(Binding):
+  """ A term with its local environment, evaluated lazily. """
+  term: Term
+  env: Env
+  cache:Cache = field(default_factory=Cache)
+  def force(self) -> Value:
+    if self.cache.is_empty():
+      self.cache.set(term_eval(self.term, self.env))
+    return self.cache.get()
+
+@dataclass(frozen=True)
+class Closure:
+  """ A term with its local environment; accepts an argument. """
+  term: Term
+  env: Env
+  def apply(self, arg:Binding) -> Value:
+    return term_eval(self.term, EnvEntry(self.env, arg))
+
+
+# Value concrete classes:
+
+@dataclass(frozen=True)
+class VSort(Value):
+  level: int
+
+@dataclass(frozen=True)
+class VLam(Value):
+  body: Closure
+
+@dataclass(frozen=True)
+class VPi(Value):
+  A: Binding
+  B: Closure
+
+@dataclass(frozen=True)
+class VNeutral(Value):
+  """ An expression that cannot be reduced due to occurence of a free variable in the head """
+  head_level: int
+  args: tuple[Binding, ...]
+
+@dataclass(frozen=True)
+class VContainer(Value):
+  """ A Binding/Value. A VContainer is a box that holds values.
+      We apply some python function when we have the necessary args.
+      Convention for the function: If it returns None, this means we're blocked.
+      Convention for the function: Args are passed as tuple. The function itself is
+      passed too, so that we can do recursion.
+      Convention for the function: Returned Value's must be WHNF (head non-reducible)
+      Note that len(args) can exceed nargs if we're blocked. """
+  head_ref: TConst
+  nargs: int
+  fn: object # function from copy of itself & tuple of nargs Binding's to Value|None
+  args: tuple[Binding] = ()
+  cache: Cache = field(default_factory=Cache)
+  def force(self) -> Value:
+    """ Override the usual Value.force() to handle fn application. """
+    if self.cache.is_empty():
+      if len(self.args) == self.nargs:
+        result = self.fn(self.fn, self.args)
+        if result is None: result = self # None means evaluation is blocked
+      else:
+        result = self # insufficient args means evaluation is blocked
+      self.cache.set(result) 
+    return self.cache.get()
+  def apply(self, arg:Binding) -> Value:
+    newargs = self.args + (arg,)
+    return VContainer(self.head_ref, self.nargs, self.fn, newargs).force()
+
+
+# ...
+
+def vapp(fn:Value, arg:Binding) -> Value:
+  match fn:
+    case VLam(body):
+      return body.apply(arg)
+    case VNeutral(head_level, args):
+      return VNeutral(head_level, args + (arg,))
+    case VContainer(_, nargs, _, args, _):
+      return fn.apply(arg)
+    case _:
+      raise EvalError(f"Uncallable value {fn}")
+
+def term_eval(term:Term, env:Env) -> Value:
   match term:
-    case App(fn, arg):
-      head, args = to_app_list(fn)
-      args.append(arg)
-      return head, args
-    case other:
-      return other, []
-
-def argchain_whnf(head:Term, args:List[Term], defns:Definitions) -> Tuple[Term, List[Term]]:
-  """ Workhorse function of whnf reduction. Terms are represented as a non-App head and a list of args.
-      beta reduction is built-in, and defns can supply other reductions through .match_reduce() """
-  # make head not an App by adding arguments to args
-  head, new_args = to_app_list(head)
-  args = new_args + args
-  # reduce if we can, otherwise return
-  match head:
-    case Lam(param, A, body):
-      if len(args) >= 1: # lambdas can be reduced if there is an arg to apply them to
-        head = body.subst(0, args[0])
-        args = args[1:] # first argument was used up
-      else:
-        return head, args
-    case Const(name):
-      subst = defns.match_reduce(name, args, defns)
-      if subst is None: # no reduction supplied
-        return head, args
-      else:
-        head, args = subst # we use the reduction supplied by defns
-    case _: # nothing else can be reduced
-      return head, args
-  # we've done a reduction so head could be an App now
-  return argchain_whnf(head, args, defns) # recursive call
-
-def whnf(term:Term, defns:Definitions) -> Term:
-  """ Reduce term to weak head normal form. """
-  head, args = argchain_whnf(term, [], defns)
-  ans = head
-  while len(args) > 0:
-    ans = App(ans, args[0])
-    args = args[1:]
-  return ans
+    case TSort(level) if level >= 0:
+      return VSort(level)
+    case TConst(module, path):
+      return def_val(module[path]).force()
+    case TVar(idx):
+      return env.at(idx).force()
+    case TApp(head, arg):
+      head_val = term_eval(head, env)
+      arg_bind = Thunk(arg, env)
+      return vapp(head_val, arg_bind)
+    case TLam(_, _, body):
+      return VLam(Closure(body, env))
+    case TPi(_, A, B):
+      return VPi(Thunk(A, env), Closure(B, env))
+    case TLet(_, _, rhs, body):
+      rhs_bind = Thunk(rhs, env)
+      return Closure(body, env).apply(rhs_bind)
+    case _:
+      raise EvalError(f"Unknown term {term}")
 
 
-def conv(t1:Term, t2:Term, defns:Definitions, accept_assignable:bool=False) -> bool:
-  """ Check structural equality for two terms. The check is exact and symmetric by
-      default, if accept_assignable is set, we instead check if t1 is assignable to t2. """
-  t1 = whnf(t1, defns)
-  t2 = whnf(t2, defns)
-  match t1, t2:
-    case Sort(l1), Sort(l2):
-      return l1 == l2 or (accept_assignable and l1 <= l2)
-    case Var(depth1), Var(depth2):
-      return depth1 == depth2
-    case Const(name1), Const(name2):
-      return name1 == name2
-    case App(fn1, arg1), App(fn2, arg2):
-      return (
-        conv(fn1, fn2, defns) and
-        conv(arg1, arg2, defns))
-    case Pi(_, A1, B1), Pi(_, A2, B2):
+def quote_apps(head:Term, args:tuple[Binding, ...], depth:int) -> Term:
+  for arg in args:
+    head = TApp(head, quote(arg, depth))
+  return head
+
+def quote(val:Binding, depth:int=0) -> Term:
+  """ Reify a value. Quoted lambdas need an expected type when checked. """
+  val = val.force() # convert to Value
+  match val:
+    case VSort(level):
+      return TSort(level)
+    case VLam(body):
+      arg = VNeutral(depth, ())
+      return TLam(f"x{depth}", None, quote(body.apply(arg), depth + 1)) # codomain is unknown
+    case VPi(A, B):
+      arg = VNeutral(depth, ())
+      return TPi(f"x{depth}", quote(A, depth), quote(B.apply(arg), depth + 1))
+    case VNeutral(head_level, args):
+      assert 0 <= head_level < depth
+      idx = depth - head_level - 1
+      return quote_apps(TVar(idx), args, depth)
+    case VContainer(head_ref, _, _, args, _):
+      return quote_apps(head_ref, args, depth)
+    case _:
+      if hasattr(val, "quote"):
+        return val.quote(depth)
+      raise EvalError(f"Unknown value {val}")
+
+
+def conv(a:Binding, b:Binding, depth:int=0, accept_assignable:bool=False) -> bool:
+  """ Check structural equality for two values. The check is exact and symmetric by
+      default. If accept_assignable is True, we instead check if `a` is assignable to `b`. """
+  a, b = a.force(), b.force()
+  match a, b:
+    case VSort(i), VSort(j):
+      return i == j or (accept_assignable and i <= j)
+    case VNeutral(i, xs), VNeutral(j, ys):
+      return i == j and conv_args(xs, ys, depth)
+    case VPi(A, B), VPi(C, D):
+      x = VNeutral(depth, ())
       return ( # NOTE: we preserve the accept_assignable flag for Pi types
-        conv(A2, A1, defns, accept_assignable) and  # swap argument order to ensure contravariance
-        conv(B1, B2, defns, accept_assignable))     # output has same order for covariance
-    case Lam(_, A1, body1), Lam(_, A2, body2):
-      return (
-        conv(A2, A1, defns) and
-        conv(body1, body2, defns))
-    case _:
-      return False # mismatched shapes
+        conv(C, A, depth, accept_assignable) and  # swap argument order to ensure contravariance
+        conv(B.apply(x), D.apply(x), depth + 1, accept_assignable) # same order for covariance
+      )
+    case VLam(body), VLam(other):
+      x = VNeutral(depth, ())
+      return conv(body.apply(x), other.apply(x), depth + 1)
+    case VContainer(head_ref_a, nargs_a, _, args_a, _), VContainer(head_ref_b, nargs_b, _, args_b, _):
+      if head_ref_a._get_def_id() != head_ref_b._get_def_id():
+        return False
+      if nargs_a != nargs_b:
+        raise EvalError(f"Expected identical VContainers to have same args, but {nargs_a} != {nargs_b}.")
+      # expect that functions should also be identical, but we have no way to check this
+      return conv_args(args_a, args_b, depth)
+    case val, other:
+      return False
 
-def infer(term:Term, ctx, defns:Definitions) -> Term:
-  match term:
-    case Sort(level):
-      return Sort(level + 1)
-    case Const(name):
-      if name not in defns:
-        raise TypecheckError(f"Unknown constant {name}.")
-      return defns[name]
-    case Var(depth):
-      if 0 <= depth < len(ctx):
-        name, var_ty = ctx[depth]
-        return var_ty.shift(depth + 1)
+def conv_args(xs, ys, depth):
+  return len(xs) == len(ys) and all(conv(x, y, depth) for x, y in zip(xs, ys))
+
+
+def debug_str(term:Term, ctx:Env) -> str:
+  return term.str(LazyEnvMap(ctx, ann_name))
+
+
+def infer_sort(term:Term, ctx:Env) -> int:
+  ty = infer(term, ctx)
+  if not isinstance(ty, VSort):
+    raise TypecheckError(f"Expected a type, got {debug_str(term, ctx)}.")
+  return ty.level
+
+
+def get_let_body_term(let_term:TLet, ctx:Env) -> tuple[Term, Env]:
+  """ Typecheck the assignment part of a let statement.
+      Returns the body term and an updated ctx containing the rhs. """
+  match let_term:
+    case TLet(name, A, rhs, body):
+      env = LazyEnvMap(ctx, ann_val)
+      if A is None:
+        domain = infer(rhs, ctx)
       else:
-        raise TypecheckError(f"Tried to lookup a varible with depth {depth} in context of size {len(ctx)}")
-    case Pi(param, A, B):
-      A_ty = whnf(infer(A, ctx, defns), defns)
-      if not isinstance(A_ty, Sort):
-        raise TypecheckError(f"Expected A in Pi type {term.str(ctx)} to be a Sort, but found {A_ty.str(ctx)}.")
-      ctx_B = [(param, A)] + ctx
-      B_ty = whnf(infer(B, ctx_B, defns), defns)
-      if not isinstance(B_ty, Sort):
-        raise TypecheckError(f"Expected B in Pi type {term.str(ctx)} to be a Sort, but found {B_ty.str(ctx_B)}.")
-      return Sort(max(A_ty.level, B_ty.level))
-    case Lam(param, A, body):
-      A_ty = whnf(infer(A, ctx, defns), defns)
-      if not isinstance(A_ty, Sort):
-        raise TypecheckError(f"Expected A in Lam {term.str(ctx)} to be a Sort, but found {A_ty.str(ctx)}")
-      ctx_body = [(param, A)] + ctx
-      body_ty = infer(body, ctx_body, defns)
-      return Pi(param, A, body_ty)
-    case App(fn, arg):
-      fn_ty = whnf(infer(fn, ctx, defns), defns)
-      match fn_ty:
-        case Pi(param, A, B):
-          check(arg, A, ctx, defns)
-          ctx_B = [(param, A)] + ctx
-          return whnf(B.subst(0, arg), defns)
-        case _:
-          raise TypecheckError(f"Expected type of fn in application {term.str(ctx)} to be a Pi type, but found {fn_ty.str(ctx)}.")
+        infer_sort(A, ctx)
+        domain = term_eval(A, env)
+        check(rhs, domain, ctx)
+      rhs_bind = Thunk(rhs, env)
+      body_ctx = EnvEntry(ctx, (rhs_bind, domain, name))
+      return body, body_ctx
     case _:
-      raise TypecheckError(f"Failed to recognize term {term}")
+      raise TypecheckError(f"Invalid Let term {let_term!r}.")
 
 
+def infer(term:Term, ctx:Env) -> Value:
+  """ Infer a semantic type.
+      Context entries are (value, type, name) annotations. """
+  depth = len(ctx)
+  match term:
+    case TSort(level) if level >= 0:
+      return VSort(level + 1)
+    case TConst(module, path):
+      try:
+        return def_ty(module[path])
+      except LookupError as error:
+        raise TypecheckError(f"Cannot resolve {'.'.join(path)}: {error}") from error
+    case TVar(idx):
+      if not 0 <= idx < depth:
+        raise TypecheckError(f"Variable index {idx} outside context of size {depth}.")
+      return ann_ty(ctx[idx])
+    case TPi(param, A, B):
+      level_A = infer_sort(A, ctx)
+      domain = term_eval(A, LazyEnvMap(ctx, ann_val))
+      level_B = infer_sort(B, EnvEntry(ctx, (VNeutral(depth, ()), domain, param)))
+      return VSort(max(level_A, level_B))
+    case TLam(_, None, _):
+      raise TypecheckError(f"Cannot infer an unannotated lambda: {debug_str(term, ctx)}.")
+    case TLam(param, A, body):
+      env = LazyEnvMap(ctx, ann_val)
+      infer_sort(A, ctx)
+      domain = term_eval(A, env)
+      body_ty = infer(body, EnvEntry(ctx, (VNeutral(depth, ()), domain, param)))
+      return VPi(domain, Closure(quote(body_ty, depth + 1), env)) # call quote because Closure needs a Term
+    case TApp(fn, arg):
+      fn_ty = infer(fn, ctx)
+      if not isinstance(fn_ty, VPi):
+        raise TypecheckError(f"Expected a function, got {debug_str(fn, ctx)}.")
+      check(arg, fn_ty.A.force(), ctx)
+      return fn_ty.B.apply(Thunk(arg, LazyEnvMap(ctx, ann_val)))
+    case TLet(_, _, _, _):
+      body, body_ctx = get_let_body_term(term, ctx)
+      return infer(body, body_ctx)
+    case _:
+      raise TypecheckError(f"Invalid term {term!r}.")
 
-def is_assignable(actual:Term, expected:Term, defns:Definitions) -> bool:
-  return conv(actual, expected, defns, accept_assignable=True)
 
+def check(term:Term, expected:Value, ctx:Env):
+  """ Check against a well-formed semantic type.
+      Lambdas use the expected codomain directly; other terms use inference. """
+  depth = len(ctx)
+  match term, expected:
+    case TLam(param, A, body), VPi(C, D): # bi-directional checking
+      if A is None:
+        domain = C.force() # infer domain from the expected type
+      else:
+        infer_sort(A, ctx)
+        domain = term_eval(A, LazyEnvMap(ctx, ann_val))
+        # Preserve Pi assignability: the expected domain is assignable to A.
+        if not conv(C, domain, depth, accept_assignable=True):
+          raise TypecheckError(f"Parameter type {debug_str(A, ctx)} does not accept the expected domain.")
+      x = VNeutral(depth, ())
+      check(body, D.apply(x), EnvEntry(ctx, (x, domain, param)))
+    case TLet(_, _, _, _), _:
+      # expected type must be able to pass through let expressions for bi-directionality
+      body, body_ctx = get_let_body_term(term, ctx)
+      check(body, expected, body_ctx)
+    case _: # infer-and-compare checking
+      actual = infer(term, ctx)
+      if not conv(actual, expected, depth, accept_assignable=True):
+        raise TypecheckError(f"Expected {debug_str(quote(expected, depth), ctx)}, "
+          f"inferred {debug_str(quote(actual, depth), ctx)}.")
 
-def check(term, expected, ctx, defns:Definitions):
-  actual = infer(term, ctx, defns)
-  if not is_assignable(actual, expected, defns):
-    raise TypecheckError(f"Term {term.str(ctx)} not assignable to type {expected.str(ctx)}.\nActual type was {actual.str(ctx)}.")
-
-
-
-# ---- Definition Classes: ----
-
-def find_used_defs(*terms:Tuple[Term]) -> Set[str]:
-  terms = list(terms)
-  ans = set()
-  i = 0 # do a BFS of the Term tree
-  while i < len(terms):
-    term_i = terms[i]
-    match term_i:
-      case Pi(param, A, B):
-        terms.append(A)
-        terms.append(B)
-      case Lam(param, A, body):
-        terms.append(A)
-        terms.append(body)
-      case App(fn, arg):
-        terms.append(fn)
-        terms.append(arg)
-      case Const(name): # if it's a Const, it uses other definitions!
-        ans.add(name.split(".")[0])
-    i += 1
-  return ans
-
-class AxiomDefinition:
-  def __init__(self, name:str, axioms:Dict[str, Term], defns:Definitions):
-    self.name = name
-    self.axioms = axioms
-    axiom_terms = []
-    for axiom_name in self.axioms:
-      axiom = self.axioms[axiom_name]
-      axiom_ty = whnf(infer(axiom, [], defns), defns)
-      if not isinstance(axiom_ty, Sort):
-        raise TypecheckError(f"Expected type of axiom {self.name}.{axiom_name} to be a Sort.")
-      axiom_terms.append(axiom)
-    self.used = find_used_defs(*axiom_terms)
-  def get_type(self, key:List[str]) -> Term:
-    match key:
-      case [axiom_name]:
-        if axiom_name in self.axioms:
-          return self.axioms[axiom_name]
-    raise IndexError(f"Couldn't find key {self.name}.{'.'.join(key)}.")
-  def match_reduce(self, key:List[str], argchain: List[Term], defns:Definitions) -> Tuple[Term, List[Term]] | None:
-    return None
-
-class ConstDefinition:
-  def __init__(self, name:str, value:Term, defns:Definitions, expected_ty:(Term|None)=None):
-    self.name = name
-    self.value = whnf(value, defns)
-    self.type = whnf(infer(self.value, [], defns), defns)
-    if expected_ty is not None:
-      if not is_assignable(self.type, expected_ty, defns):
-        raise TypecheckError(f"When defining constant {self.name}, expected a type of {expected_ty.str([])} but actually got {self.type.str([])}.")
-    self.used = find_used_defs(self.value)
-  def get_type(self, key:List[str]) -> Term:
-    match key:
-      case []:
-        return self.type
-    raise IndexError(f"Couldn't find key {self.name}.{'.'.join(key)}.")
-  def match_reduce(self, key:List[str], argchain: List[Term], defns:Definitions) -> Tuple[Term, List[Term]] | None:
-    match key:
-      case []:
-        return self.value, argchain
-    raise IndexError(f"Couldn't find key {self.name}.{'.'.join(key)}.")
 
 

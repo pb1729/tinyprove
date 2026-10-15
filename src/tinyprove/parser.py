@@ -1,19 +1,22 @@
 import re
 from typing import List, Tuple
 
-from .ir import IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrApp, IrConstantDefinition, to_positive_int
-from .core import Term
+from .core import Env, EmptyEnv, EnvEntry
+from .ir import Binder, IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrLet, IrApp, IrConstantDefinition
 from .inductive import IrInductiveSelfRef, IrConstructorDefinition, IrInductiveDefinition
 
 
 # Tokeniser:
-_ident_re = r"[\.A-Za-z_][\.A-Za-z0-9_]*"
+_first_symb_re = r"[A-Za-z_\|\&\+\*−≡¬⊥⊤<>]"
+_rest_symb_re = r"(" + _first_symb_re + r"|[0-9])"
+_name_re = _first_symb_re + _rest_symb_re + r"*"
+_ident_re = r"(" + _name_re + f"\.)*" + _name_re
 _token_re = re.compile(
   r"""
   \s*                                 # skip leading whitespace
   (                                   # group captures only non-whitespace
       =>|->|                          # separators
-      [\[\]()\|,:=λΠδι]|              # punctuation (unicode lambdas, etc.)
+      [\[\]()\{\},:=λΠι]|             # punctuation (parens, lambdas, etc.)
       """ + _ident_re + """           # identifiers
   )
   \s*                                 # skip trailing whitespace
@@ -21,6 +24,8 @@ _token_re = re.compile(
   re.VERBOSE,
 )
 
+def split_path(ident:str) -> Tuple[str]:
+  return tuple(ident.split("."))
 
 def _tokenise(src: str) -> List[str]:
   """ Return a list of string tokens (whitespace already stripped). """
@@ -44,13 +49,31 @@ def strip_comments(src:str) -> str:
   return "\n".join(src)
 
 
+def to_positive_int(digits:str) -> int | None:
+  try:
+    val = int(digits)
+  except ValueError:
+    return None
+  if val < 0: return None
+  return val
+
+
+def find_ref(binders:Env, name:str) -> IrNode:
+  ans = 0
+  while not isinstance(binders, EmptyEnv):
+    if binders.val.name == name:
+      return IrVar(binders.val)
+    binders = binders.prev
+  return IrConst(split_path(name))
+
+
 # Recursive‑descent parser:
 class Parser:
   def __init__(self, tokens: List[str], ctx=None):
     self.toks: List[str] = tokens
     self.pos: int = 0
-    self.env: List[str] = [] if ctx is None else [name for name, typ in ctx]
     self.indty_name = None
+    self.env:Env = EmptyEnv() # maintain environment of what is in our lexical scope
   def _peek(self) -> str | None:
     return self.toks[self.pos] if self.pos < len(self.toks) else None
   def _eat(self, expected: str | None = None) -> str:
@@ -61,148 +84,162 @@ class Parser:
       raise SyntaxError(f"expected '{expected}', got '{tok}'")
     self.pos += 1
     return tok
-  def env_push(self, name):
-    self.env.insert(0, name)
-  def env_pop(self):
-    return self.env.pop(0)
-  def parse(self) -> IrNode:
-    node = self._parse_expr()
-    if self._peek() is not None:
-      raise SyntaxError(f"found trailing tokens: {' '.join(self.toks[self.pos:])}")
-    return node
-  def _parse_expr(self) -> IrNode:
-    # Binder constructs have the lowest precedence, so look for them *first*.
+  def _push(self, binder:Binder):
+    self.env = EnvEntry(self.env, binder)
+  def _pop(self) -> Binder:
+    ans = self.env[0]
+    self.env = self.env.prev
+    return ans
+  def _parse_comma_separated(self,
+      terminate_on:str|None, entry_parse_fn,
+      # passing add_binders=True requires you to return Tuple[Binder, SomethingElse, ...]
+      add_binders:bool=False
+  ) -> List[object]:
+    ans = []
+    while True:
+      tok = self._peek()
+      if tok == terminate_on:
+        return ans
+      pos_prev = self.pos
+      entry_val = entry_parse_fn()
+      if add_binders:
+        self._push(entry_val[0])
+      ans.append(entry_val)
+      if self.pos == pos_prev:
+        assert False, "no progress, halting to avoid infinite loop. this indicates a parser bug."
+      tok = self._peek()
+      if tok == terminate_on:
+        return ans
+      self._eat(",")
+  def _check_name(self, name, category:str):
+    if name == self.indty_name:
+      raise SyntaxError(f"Can't shadow inductive type name f{self.indty_name}")
+    if not re.match(_name_re, name):
+      raise SyntaxError(f"Expected a valid {category} name instead of {name}")
+  def parse(self) -> List[IrNode]:
+    return self._parse_comma_separated(None, self._parse_defn)
+  def _parse_defn(self) -> IrNode:
     tok = self._peek()
-    if tok == "λ":
-      return self._parse_lambda()
-    if tok == "Π":
-      return self._parse_pi()
-    if tok == "δ":
-      return self._parse_delta()
-    if tok == "ι":
+    if tok == "ι": # define inductive type
       return self._parse_iota()
-    # Otherwise we are in application / atom land.
-    return self._parse_app()
-  def _parse_lambda(self) -> IrNode:
-    self._eat("λ")
-    name = self._eat()  # identifier
-    assert re.match(_ident_re, name), f"expected a valid parameter name instead of {name}"
-    self._eat(":")
-    A = self._parse_expr()
-    self._eat("->")
-    self.env_push(name)
-    body = self._parse_expr()
-    self.env_pop()
-    return IrLam(name, A, body)
-  def _parse_pi(self) -> IrNode:
-    self._eat("Π")
-    name = self._eat()
-    assert re.match(_ident_re, name), f"expected a valid parameter name instead of {name}"
-    self._eat(":")
-    A = self._parse_expr()
-    self._eat("=>")
-    self.env_push(name)
-    B = self._parse_expr()
-    self.env_pop()
-    return IrPi(name, A, B)
-  def _parse_delta(self) -> IrNode:
-    self._eat("δ")
-    name = self._eat()
-    assert re.match(_ident_re, name), f"expected a valid constant name instead of {name}"
-    if self._peek() == ":": # type annotation / theorem statement supplied
-      self._eat(":")
-      expected_ty = self._parse_expr()
-    else:
-      expected_ty = None
-    self._eat("=")
-    value = self._parse_expr()
-    return IrConstantDefinition(name, value, expected_ty)
+    # other definition
+    binder, A, rhs = self._parse_assignment()
+    return IrConstantDefinition(binder.name, rhs, A) # we just want the name as a string
   def _parse_iota(self) -> IrNode:
-    assert self.indty_name is None, "can't create an inductive typedef inside an existing one"
     self._eat("ι")
     name = self._eat()
-    assert re.match(_ident_re, name), f"expected a valid inductive type name instead of {name}"
+    self._check_name(name, "inductive type")
     # get the list of parameters
     self._eat("(")
-    params = []
-    while True:
-      if self._peek() == ")": break
-      param_name = self._eat()
-      assert re.match(_ident_re, param_name), f"expected a valid parameter name instead of {param_name}"
-      self._eat(":")
-      param_ty = self._parse_expr()
-      self.env_push(param_name)
-      params.append((param_name, param_ty))
-      if self._peek() == ")": break
-      self._eat(",")
+    params = self._parse_comma_separated(")", self._parse_parameter, add_binders=True)
     self._eat(")")
     # get the list of indices
     self._eat("[")
-    indices = []
-    while True:
-      if self._peek() == "]": break
-      index_name = self._eat()
-      assert re.match(_ident_re, index_name), f"expected a valid index name instead of {index_name}"
-      self._eat(":")
-      index_ty = self._parse_expr()
-      self.env_push(index_name)
-      indices.append((index_name, index_ty))
-      if self._peek() == "]": break
-      self._eat(",")
+    indices = self._parse_comma_separated("]", self._parse_parameter, add_binders=True)
+    for _ in indices: self._pop() # remove added index binders
     self._eat("]")
-    # params remain part of the environment, indices don't
-    for i in range(len(indices)):
-      self.env_pop()
     # get the overall sort of this inductive type
     self._eat(":")
     sort = self._parse_atom()
-    assert isinstance(sort, IrSort), "expected to be given a Type<n> for the sort of this definition"
-    # Turn on recognizing this name as recursive while parsing constructors
+    assert isinstance(sort, IrSort), "expected inductive type to have a sort like Type<n>"
+    # Edit parsing context: recognize inductive type name as recursive
     self.indty_name = name
     # get the list of constructors
-    constructors = []
-    while True:
-      if self._peek() != "|": break
-      self._eat("|")
-      constructor_name = self._eat()
-      assert re.match(_ident_re, constructor_name), f"expected a valid constructor name instead of {constructor_name}"
-      self._eat("(")
-      args = []
-      while True:
-        if self._peek() == ")": break
-        arg_name = self._eat()
-        assert re.match(_ident_re, arg_name), f"expected a valid parameter name instead of {arg_name}"
-        self._eat(":")
-        arg_ty = self._parse_expr()
-        self.env_push(arg_name)
-        args.append((arg_name, arg_ty))
-        if self._peek() == ")": break
-        self._eat(",")
-      self._eat(")")
-      self._eat("=>")
-      constructor_return_ty = self._parse_atom()
-      assert isinstance(constructor_return_ty, IrInductiveSelfRef), "constructors must return an instance of the type"
-      # remove constructor args from the environment
-      for i in range(len(args)):
-        self.env_pop()
-      constructors.append(IrConstructorDefinition(constructor_name, args, constructor_return_ty.index_vals))
-    # remove type parameters from the environment
-    for i in range(len(params)):
-      self.env_pop()
-    # Turn off recognizing this name as recursive now that we're done
+    self._eat("{")
+    constructors = self._parse_comma_separated("}", self._parse_constructor_def)
+    self._eat("}")
+    # Revert parsing context: forget inductive type name, remove added binders
     self.indty_name = None
+    for _ in params: self._pop()
     # put everything together to make the answer
     return IrInductiveDefinition(
       name, sort,
       params, indices,
       constructors)
+  def _parse_constructor_def(self) -> IrNode:
+    name = self._eat()
+    self._check_name(name, "constructor")
+    self._eat("(")
+    args = self._parse_comma_separated(")", self._parse_parameter, add_binders=True)
+    self._eat(")")
+    self._eat("=>")
+    self._eat(self.indty_name)
+    self._eat("[")
+    output_indices = self._parse_comma_separated("]", self._parse_expr)
+    self._eat("]")
+    for _ in args: self._pop() # remove added binders
+    return IrConstructorDefinition(name, args, output_indices)
+  def _parse_expr(self) -> IrNode:
+    # Binder constructs have the lowest precedence, so look for them *first*.
+    tok = self._peek()
+    if tok == "{":
+      return self._parse_let()
+    if tok == "λ":
+      return self._parse_lambda()
+    if tok == "Π":
+      return self._parse_pi()
+    # Otherwise we are in application / atom land.
+    return self._parse_app()
+  def _parse_let(self) -> IrNode:
+    self._eat("{")
+    assignments = self._parse_comma_separated("->", self._parse_assignment, add_binders=True)
+    self._eat("->")
+    ans = self._parse_expr()
+    self._eat("}")
+    for name, A, rhs in assignments[::-1]:
+      ans = IrLet(self._pop(), A, rhs, ans) # remove accumulated scope as we construct the statement
+    return ans
+  def _parse_assignment(self) -> Tuple[Binder, IrNode|None, IrNode]:
+    name = self._eat()
+    self._check_name(name, "variable")
+    tok = self._peek()
+    if tok == ":":
+      self._eat(":")
+      A = self._parse_expr()
+    else:
+      A = None
+    self._eat("=")
+    rhs = self._parse_expr()
+    binder = Binder(name)
+    return (binder, A, rhs)
+  def _parse_parameter(self) -> Tuple[Binder, IrNode]:
+    name = self._eat()
+    self._check_name(name, "parameter")
+    self._eat(":")
+    ty = self._parse_expr()
+    binder = Binder(name)
+    return (binder, ty)
+  def _parse_lambda(self) -> IrNode:
+    self._eat("λ")
+    name = self._eat()  # identifier
+    self._check_name(name, "parameter")
+    tok = self._peek()
+    if tok == ":":
+      self._eat(":")
+      A = self._parse_expr()
+    else:
+      A = None
+    self._eat("->")
+    self._push(Binder(name))
+    body = self._parse_expr()
+    return IrLam(self._pop(), A, body)
+  def _parse_pi(self) -> IrNode:
+    self._eat("Π")
+    name = self._eat()
+    self._check_name(name, "parameter")
+    self._eat(":")
+    A = self._parse_expr()
+    self._eat("=>")
+    self._push(Binder(name))
+    B = self._parse_expr()
+    return IrPi(self._pop(), A, B)
   def _parse_app(self) -> IrNode:
     node = self._parse_atom()
     # Without parentheses, we assume application is left-to-right
     while True:
       nxt = self._peek()
       # close-paren or separators break application chain. binder starts do as well.
-      if nxt is None or nxt in {")", "]", ":", ",", "=>", "->", "Π", "λ", "="}:
+      if nxt is None or nxt in {")", "]", "}", ":", ",", "=>", "->", "Π", "λ", "="}:
         break
       arg = self._parse_atom()
       node = IrApp(node, arg)
@@ -226,35 +263,22 @@ class Parser:
     # Identifiers (variables / constants)
     if re.match(_ident_re, tok):
       self._eat()
-      if tok in self.env:
-        return IrVar(tok)
-      elif tok == self.indty_name:
+      if tok == self.indty_name:
         self._eat("[")
-        index_vals = []
-        while True:
-          if self._peek() == "]": break
-          index_vals.append(self._parse_expr())
-          if self._peek() == "]": break
-          self._eat(",")
+        index_vals = self._parse_comma_separated("]", self._parse_expr)
         self._eat("]")
         return IrInductiveSelfRef(index_vals)
-      else:
-        return IrConst(tok)
+      return find_ref(self.env, tok)
     # catchall
     raise SyntaxError(f"unexpected token '{tok}'")
 
 
 # Parsing functions:
 
-def parse_ir(src: str, ctx=None) -> IrNode:
+def parse(src: str, ctx=None) -> List[IrNode]:
   src = strip_comments(src)
   tokens = _tokenise(src)
   return Parser(tokens, ctx=ctx).parse()
-
-def parse(src: str, ctx=None) -> Term:
-  ans_ir = parse_ir(src, ctx)
-  ctx_names = [] if ctx is None else [nm for nm, _ in ctx]
-  return ans_ir.to_term(ctx_names)
 
 
 

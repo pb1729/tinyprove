@@ -1,21 +1,20 @@
 from .core import (
-  TypecheckError,
-  Term, Sort, Const, Var, Pi, Lam, App,
-  Definitions, AxiomDefinition, ConstDefinition,
+  TypecheckError, DefinitionError,
+  Term, TSort, TConst, TVar, TPi, TLam, TApp, TLet,
+  Module,
   infer, check,
 )
 from .ir import (
-  IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrApp, IrConstantDefinition
+  IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrApp, IrLet, IrConstantDefinition
 )
 from .parser import (
-  parse_ir, parse,
+  parse,
 )
 from .inductive import (
-  DefinitionError,
-  InductiveDef, IrConstructorDefinition, IrInductiveSelfRef,
+  IrInductiveDefinition, IrConstructorDefinition, IrInductiveSelfRef,
 )
-from .axiom_defs import (
-  extend_definitions, get_usual_axioms,
+from .defs import (
+  def_module, get_usual_axioms,
 )
 
 

@@ -1,370 +1,396 @@
 from __future__ import annotations
-from typing import List, Dict, Tuple
+from dataclasses import dataclass, field
 
-from .core import *
-from .ir import *
-
-
-class DefinitionError(Exception):
-  pass
-
-
-def pi_wrap(inner:IrNode, ctx:List[Tuple[str, IrNode]]):
-  """ Wrap an inner type in a context. """
-  ans = inner
-  for nm, ty in ctx:
-    ans = IrPi(nm, ty, ans)
-  return ans
-
-def app_wrap(fn:IrNode, args:List[IrNode]):
-  ans = fn
-  for arg in args:
-    ans = IrApp(ans, arg)
-  return ans
-
-def ctx_to_names(ctx:List[Tuple[str, IrNode]]) -> List[str]:
-  return [nm for nm, _ in ctx]
-
-def names_unique(names:List[str]) -> bool:
-  seen = set()
-  for nm in names:
-    if nm in seen: return False
-    seen.add(nm)
-  return True
+from .ir import Binder, IrNode, IrSort, IrConst, IrVar, IrLam, IrPi, IrApp, IrLet
+from .core import (
+  Binding, Value, Term, Module, Env,
+  LookupError, TypecheckError, DefinitionError, EvalError,
+  TSort, TVar, TConst, TLam,
+  VSort, VNeutral, VContainer,
+  EmptyEnv, EnvEntry, LazyEnvMap, ann_name, ann_val, infer_sort, term_eval,
+)
 
 
-class DefsExtend:
-  """ Temporarily extend definitions with a dict of additional definitions. """
-  def __init__(self, base_defns, new_defs_dict:dict):
-    self.base_defns = base_defns
-    self.new_defs_dict = new_defs_dict
-    for key in self.new_defs_dict:
-      assert key not in self.base_defns, "duplicate key {key}"
-  def __getitem__(self, key:str) -> Term:
-    if key in self.new_defs_dict:
-      return self.new_defs_dict[key]
-    return self.base_defns[key]
-  def __contains__(self, key:str) -> bool:
-    return key in self.new_defs_dict or key in self.base_defns
-  def match_reduce(self, key:str, argchain: List[Term], defns:Definitions) -> Tuple[Term, List[Term]] | None:
-    if key in self.new_defs_dict:
-      return None # Adding new reduction rules is not supported here
-    return self.base_defns.match_reduce(key, argchain, defns)
+# Inductive info classes:
+
+@dataclass(frozen=True)
+class ConstructorInfo:
+  ref: TConst
+  nfields: int
+  rule: Term
+
+@dataclass(eq=False)
+class InductiveInfo:
+  """ Nominal identity, compiled rules, and the generated inductor submodule. """
+  ref: TConst
+  nparams: int
+  nindices: int
+  constructors: tuple[ConstructorInfo, ...] = ()
 
 
-def type_level(ty_whnf:Term, ctx:List[Tuple[str, Term]], defns:Definitions):
-  """ Compute the effective universe level of a type. """
-  if isinstance(ty_whnf, Sort):
-    return ty_whnf.level
-  else:
-    ty_ty = whnf(infer(ty_whnf, ctx, defns), defns)
-    if not isinstance(ty_ty, Sort):
-      raise TypecheckError(f"Expected {ty_whnf.str(ctx)} to be a Sort but found type {ty_ty.str(ctx)}.")
-    return ty_ty.level
+# Functions to create values for constructors and induction:
+
+def get_ind_reduce(info:InductiveInfo, level:int) -> VContainer:
+  """ Returns VContainer with correct fn to perform induction """
+  i_motive = info.nparams # arglist offset for motive
+  i_branches = i_motive + 1 # arglist offset for branches
+  i_indices = i_branches + len(info.constructors) # arglist offset for indices of scrutinee
+  i_scrutinee = i_indices + info.nindices # arglist offset for scrutinee
+  arity = i_scrutinee + 1
+  # use get_rec to obtain recursive call (indices and scrutinee removed)
+  ind_selfref = TConst(info.ref.module, info.ref.path + (f"ind{level}",))
+  def get_rec(fn, args:tuple[Binding]) -> VContainer:
+    return VContainer(ind_selfref, arity, fn, args[:i_indices])
+  def induct(rec, args:tuple[Binding, ...]) -> Value|None:
+    assert len(args) == arity
+    scrutinee = args[i_scrutinee].force()
+    match scrutinee:
+      case VNeutral(_, _):
+        return None # evaluation blocked
+      case VContainer(head_ref, nargs, fn, params_fields):
+        for tag, cons_info in enumerate(info.constructors):
+          if head_ref._get_def_id() == cons_info.ref._get_def_id():
+            fields = params_fields[i_motive:]
+            val_rec = get_rec(rec, args)
+            branch = args[i_branches + tag]
+            env = EnvEntry(EnvEntry(EmptyEnv(), val_rec), branch)
+            for binding in fields:
+              env = EnvEntry(env, binding)
+            result = term_eval(cons_info.rule, env)
+            return result
+        return None # evaluation blocked
+      case _:
+        raise EvalError(f"Induction requires a constructor or blocked computation.")
+  return VContainer(ind_selfref, arity, induct)
+
+def blocked_noforce(rec, args:tuple[Binding, ...]) -> Value|None:
+  """ For VContainer's that should always be considered blocked """
+  return None
 
 
-def typecheck_args(args:List[Tuple[str, IrNode]], ctx:List[Tuple[str, Term]], selfref_ir:IrNode, defns:Definitions,
-    max_level:int|None=None, positive_typenm:str|None=None):
-  """ Given a list of args that might be type parameters or constructor args,
-      check that they are all some kind of Sort. Returns a full ctx containing all args. """
-  if len(args) == 0: return ctx
-  (arg_nm, arg_ty_ir), *args_rest = args
-  arg_ty = selfref_sub(arg_ty_ir, selfref_ir).to_term(ctx_to_names(ctx))
-  arg_ty_whnf = whnf(arg_ty, defns)
-  ty_level = type_level(arg_ty_whnf, ctx, defns) # typecheck and get the type's level
-  if max_level is not None and ty_level > max_level: # ensure constructor arguments lie within the correct universe
-    raise TypecheckError(f"Argument {arg_nm} is at the Type{ty_level} level but at most Type{max_level} would be sound.")
-  if positive_typenm is not None: # do a positivity check if a typename that must be positive was specificed
-    if not all(walk(positive_typenm, arg_ty_whnf, defns)):
-      raise DefinitionError(f"Constructor arg {arg_nm} fails positivity check.")
-  return typecheck_args(args_rest, [(arg_nm, arg_ty)] + ctx, selfref_ir, defns,
-    max_level, positive_typenm)
-
+# new IR node types:
 
 @dataclass(frozen=True)
 class IrInductiveSelfRef(IrNode):
-  index_vals: List[IrNode]
-  def to_term(self, ctx_nm):
-    raise RuntimeError("Can't convert IrInductiveSelfRef to Term, you should use selfref_sub() to expand it first.")
+  index_vals: list[IrNode]
 
 @dataclass(frozen=True)
 class IrConstructorDefinition(IrNode):
   name: str
-  args: List[Tuple[str, IrNode]]
-  output_indices: List[IrNode]
-  def to_term(self, ctx_nm):
-    raise RuntimeError("Can't convert IrConstructorDefinition to Term, it is intended for creating InductiveDef's only.")
+  args: list[tuple[Binder, IrNode]]
+  output_indices: list[IrNode]
 
 @dataclass(frozen=True)
 class IrInductiveDefinition(IrNode):
   name: str
   sort: IrSort
-  params: List[Tuple[str, IrNode]]
-  indices: List[Tuple[str, IrNode]]
-  constructors:List[IrConstructorDefinition]
-  def to_term(self, ctx_nm):
-    raise RuntimeError("Can't convert IrInductiveDefinition to Term, it is intended for creating InductiveDef's only.")
-  def to_definition(self, defns: Definitions):
-    return InductiveDef(self.name, self.sort, self.params, self.indices, self.constructors, defns)
+  params: list[tuple[Binder, IrNode]]
+  indices: list[tuple[Binder, IrNode]]
+  constructors: list[IrConstructorDefinition]
+  def apply(self, module:Module):
+    define_inductive(module, self)
 
-def selfref_sub(node:IrNode, selfref_ir:IrNode) -> IrNode:
+
+# IR manipulation:
+
+def pi_wrap(inner:IrNode, ctx:list[tuple[Binder, IrNode]]) -> IrNode:
+  """ Wrap an inner type in a context. """
+  ans = inner
+  for binder, ty in ctx[::-1]: # reverse wrapping order to get correct nesting
+    ans = IrPi(binder, ty, ans)
+  return ans
+
+def lam_wrap(inner:IrNode, ctx:list[tuple[Binder, IrNode]]) -> IrNode:
+  ans = inner
+  for binder, _ in ctx[::-1]: # reverse wrapping order to get correct nesting
+    ans = IrLam(binder, None, ans) # ignores type info in ctx and omits domain type annotation
+  return ans
+
+def app_wrap(fn:IrNode, args:list[IrNode]) -> IrNode:
+  ans = fn
+  for arg in args:
+    ans = IrApp(ans, arg)
+  return ans
+
+def selfref_sub(node:IrNode|None, selfref_ir:IrNode, allow_selfref:bool=True) -> IrNode:
+  """ Replace self-references with given IR, raises error if indices of selfref contain self-reference """
   match node:
+    case None: # Type annotations are sometimes None in Lam and Let
+      return None
     case IrLam(param, A, body):
-      return IrLam(param, selfref_sub(A, selfref_ir), selfref_sub(body, selfref_ir))
+      return IrLam(param,
+        selfref_sub(A, selfref_ir, allow_selfref=allow_selfref),
+        selfref_sub(body, selfref_ir, allow_selfref=allow_selfref))
+    case IrLet(name, A, rhs, body):
+      return IrLet(name,
+        selfref_sub(A, selfref_ir, allow_selfref=allow_selfref),
+        selfref_sub(rhs, selfref_ir, allow_selfref=allow_selfref),
+        selfref_sub(body, selfref_ir, allow_selfref=allow_selfref))
     case IrPi(param, A, B):
-      return IrPi(param, selfref_sub(A, selfref_ir), selfref_sub(B, selfref_ir))
+      return IrPi(param,
+        selfref_sub(A, selfref_ir, allow_selfref=allow_selfref),
+        selfref_sub(B, selfref_ir, allow_selfref=allow_selfref))
     case IrApp(fn, arg):
-      return IrApp(selfref_sub(fn, selfref_ir), selfref_sub(arg, selfref_ir))
-    case IrSort(level):
-      return IrSort(level)
-    case IrVar(nm):
-      return IrVar(nm)
-    case IrConst(name):
-      return IrConst(name)
-    case IrInductiveSelfRef(index_vals):
-      return app_wrap(selfref_ir, index_vals)
-    case _:
-      raise DefinitionError("Unknown node type.")
-
-
-def walk(indty_name: str, arg_ty:Term, defns:Definitions, polarity:bool=True) -> List[bool]:
-  """ Do a polarity check of node and returns a list of polarities of self-references.
-      polarity: True = positive, and False = negative """
-  arg_ty = whnf(arg_ty, defns)
-  match arg_ty:
-    case Lam():
-      raise DefinitionError("Lambdas not supported in constructor definition.")
-    case Pi(param, A, B):
-      return walk(indty_name, A, defns, not polarity) + walk(indty_name, B, defns, polarity)
-    case App(fn, arg):
-      arg_appearances = [
-        False # this application could produce a result where the inductive type appears negatively
-        for _ in walk(indty_name, arg, defns, polarity)
+      return IrApp(
+        selfref_sub(fn, selfref_ir, allow_selfref=allow_selfref),
+        selfref_sub(arg, selfref_ir, allow_selfref=allow_selfref))
+    case IrInductiveSelfRef(index_vals): # SUBSTITUTE!
+      if not allow_selfref: raise DefinitionError("Indices of a self-reference cannot contain self-reference.")
+      subbed_indices = [
+        selfref_sub(idx_val, selfref_ir, allow_selfref=False)
+        for idx_val in index_vals
       ]
-      return walk(indty_name, fn, defns, polarity) + arg_appearances
-    case Sort():
-      return []
-    case Var():
-      return []
-    case Const(name):
-      if name == indty_name:
-        return [polarity]
-      return []
-    case _:
-      raise DefinitionError("Unknown term.")
+      return app_wrap(selfref_ir, subbed_indices)
+    case _: # leaf node
+      return node
 
 
-class ConstructorDef:
-  def __init__(self, indty:InductiveDef, name:str, args:List[Tuple[str, IrNode]], output_indices:List[IrNode]):
-    if name == "ind": raise DefinitionError("ind is a reserved name and cannot be used as a constructor name.")
-    self.indty = indty
-    self.name = name
-    assert names_unique(ctx_to_names(self.indty.params + args)), "constructor arguments should have unique names"
-    self.args = args
-    self.output_indices = output_indices
-    # type & positivity checking:
-    constructor_ctx = typecheck_args(self.args, self.indty.params_ctx, self.indty.selfref_ir, self.indty.defns_ext,
-      max_level=self.indty.get_level(), positive_typenm=self.indty.name)
-    self.check_output_indices(constructor_ctx, self.indty.inds_ctx)
-    # prep data that will be used by match-reduce
-    self.matchred_sig = self.get_matchred_sig()
-    self.arg_tys = [arg_ty for _, arg_ty in constructor_ctx[:len(self.args)]]
-  def get_ty(self):
-    return pi_wrap(
-      pi_wrap(
-        IrInductiveSelfRef(self.output_indices),
-        self.args[::-1]),
-      self.indty.params[::-1])
-  def get_case_fn_ty(self):
-    converted_args = [] # args list that will include any necessary recursion
-    for arg_nm, arg_ty in self.args:
-      converted_args.append((arg_nm, arg_ty)) # always use the arg itself
-      if isinstance(arg_ty, IrInductiveSelfRef): # add inductive hypothesis for recursion
-        rec_ty = IrApp(
-          app_wrap(
-            IrVar("@motive"),
-            arg_ty.index_vals),
-          IrVar(arg_nm))
-        converted_args.append((f"@rec_{arg_nm}", rec_ty))
-    applied_constructor_ty = app_wrap(
-      app_wrap(
-        IrConst(f"{self.indty.name}.{self.name}"),
-        [IrVar(varnm) for varnm, _ in self.indty.params]),
-      [IrVar(argnm) for argnm, _ in self.args])
-    return pi_wrap(
-      IrApp(
-        app_wrap(
-          IrVar("@motive"),
-          self.output_indices),
-        applied_constructor_ty),
-      converted_args[::-1])
-  def check_output_indices(self, constructor_ctx:List[Tuple[str, Term]], inds_ctx:List[Tuple[str, Term]]):
-    num_inds = len(self.indty.indices)
-    assert len(self.output_indices) == num_inds, f"Constructor {self.name} definition has incorrect number of output indices."
-    for i in range(num_inds):
-      output_index_i = self.output_indices[i].to_term(ctx_to_names(constructor_ctx))
-      output_index_ty = infer(output_index_i, constructor_ctx, self.indty.defns_ext)
-      target_nm, target_ty = inds_ctx[num_inds - 1 - i]
-      if not conv(output_index_ty, target_ty, self.indty.defns):
-        raise TypecheckError(f"Constructor {self.name} output index {target_nm} has the wrong type.")
-  def get_matchred_sig(self):
-    ans = []
-    for i, (_, arg_ty) in enumerate(self.args):
-      if isinstance(arg_ty, IrInductiveSelfRef):
-        arg_names = [arg_nm for arg_nm, _ in reversed(self.indty.params + self.args[:i])] # reverse to make a ctx
-        ans.append([index_val.to_term(arg_names) for index_val in arg_ty.index_vals])
+# ...
+
+@dataclass
+class InductiveModule(Module):
+  ind_info: InductiveInfo
+  # The sole free variable is the motive's universe, supplied on demand.
+  ind_type: Term
+  cache: dict[int, tuple[Binding, Value]] = field(default_factory=dict)
+  def __getitem__(self, path:tuple[str, ...]) -> tuple[Binding, Value]:
+    if len(path) != 1 or not path[0].startswith("ind"):
+      raise LookupError("Expected ind<n> with n a non-negative integer.")
+    digits = path[0][3:]
+    if not digits.isascii() or not digits.isdigit():
+      raise LookupError("Expected ind<n> with n a non-negative integer.")
+    level = int(digits)
+    if level not in self.cache:
+      ctx = EnvEntry(EmptyEnv(), (VSort(level), VSort(level + 1), "@sort"))
+      infer_sort(self.ind_type, ctx)
+      ty = term_eval(self.ind_type, LazyEnvMap(ctx, ann_val))
+      ind_reduce = get_ind_reduce(self.ind_info, level)
+      self.cache[level] = (ind_reduce, ty)
+    return self.cache[level]
+  def add(self, name, entry):
+    raise RuntimeError("Inductive module cannot accept new definitions!")
+
+
+def env_map(env:Env, fn) -> Env:
+  match env:
+    case EmptyEnv():
+      return EmptyEnv()
+    case EnvEntry(prev, val):
+      return EnvEntry(
+        env_map(prev, fn),
+        fn(val))
+
+
+@dataclass(frozen=True)
+class GetIHResult:
+  """ Result type for the function get_ih.
+      copy: None if field_ty contains self-reference, a copy of field_ty otherwise.
+      ih: I.H. data (args, scrut, indices) if there's an I.H., None otherwise.
+      args: The arguments of the I.H. function.
+      scrut: The scrutinee for the I.H.
+      indices: The indices for the I.H.
+      Invariant: (copy != None) implies (ih == None) because can't have I.H. without self-reference. """
+  copy: IrNode|None
+  ih: tuple[List[tuple[Binder, IrNode]], IrNode, tuple[IrNode, ...]]|None
+
+def get_ih(arg_ty:IrNode, original_arg:IrVar, domain_depth:int=0) -> GetIHResult:
+  """ This function recursively walks the entire arg_ty syntax tree.
+      We raise a definition error if we encounter something disallowed.
+      domain_depth allows us to perform positivity checking, & distinguish strict positivity. """
+  match arg_ty:
+    case IrLam(_, _, _):
+      raise DefinitionError("Lambdas are not allowed in constructor field types.")
+    case IrLet(_, _, _, _):
+      raise DefinitionError("Let statements are not allowed in constructor field types.")
+    case IrSort(level):
+      return GetIHResult(IrSort(level), None)
+    case IrConst(path):
+      return GetIHResult(IrConst(path), None)
+    case IrVar(binder):
+      return GetIHResult(IrVar(binder), None)
+    case IrApp(fn, arg):
+      fn_res = get_ih(fn, original_arg, domain_depth=domain_depth)
+      arg_res = get_ih(arg, original_arg, domain_depth=domain_depth)
+      if fn_res.copy is None or arg_res.copy is None:
+        raise DefinitionError("Self-references can't appear in function applications.")
+      return GetIHResult(IrApp(fn_res.copy, arg_res.copy), None)
+    case IrPi(param, A, B):
+      A_res = get_ih(A, original_arg, domain_depth=domain_depth + 1)
+      B_res = get_ih(B, original_arg, domain_depth=domain_depth)
+      if A_res.copy is None or B_res.copy is None:
+        copy = None
       else:
-        ans.append(None)
-    return ans
+        copy = IrPi(param, A_res.copy, B_res.copy)
+      if A_res.copy is None or B_res.ih is None:
+        ih = None
+      else:
+        B_args, B_scrut, B_indices = B_res.ih
+        B_args = [(param, A_res.copy)] + B_args
+        B_scrut = IrApp(B_scrut, IrVar(param))
+        ih = (B_args, B_scrut, B_indices)
+      return GetIHResult(copy, ih)
+    case IrInductiveSelfRef(indices):
+      copy = None # self-reference means we can't copy this
+      if domain_depth % 2 == 1:
+        raise DefinitionError("Negative appearance of self-reference: Positivity check failed.")
+      elif domain_depth == 0: # strictly positive appearance
+        ih = ([], original_arg, indices)
+      else:
+        ih = None
+      return GetIHResult(copy, ih)
+    case _:
+      raise DefinitionError(f"Unexpected IrNode type {type(arg_ty)}.")
+      
+def type_level(ty:Term, ctx:Env) -> int:
+  """ Compute the effective universe level for a constructor field. """
+  match ty:
+    case TSort(level):
+      return level
+    case _:
+      return infer_sort(ty, ctx)
 
+def define_inductive(module:Module, declaration:IrInductiveDefinition) -> InductiveInfo:
+  """ Check and install an inductive. Roll back all entries if checking fails.
 
-def subst_args_as_term_ctx(t:Term, args:List[Term]):
-  for i, arg in enumerate(args):
-    depth = len(args) - i - 1
-    t = t.subst(depth, arg)
-  return t
-
-
-class InductiveDef:
-  def __init__(self,
-      name:str, sort:IrSort,
-      params:List[Tuple[str, IrNode]], indices:List[Tuple[str, IrNode]],
-      constructors:List[IrConstructorDefinition],
-      defns: Definitions):
-    # general type setup:
-    self.name = name
-    self.sort = sort
-    assert names_unique(ctx_to_names(params + indices))
-    self.params = params
-    self.indices = indices
-    self.defns = defns
-    # compute intermediate representations:
-    self.ty_ir = self._get_ty()
-    self.selfref_ir = self._get_selfref_ir()
-    # type checking:
-    self.params_ctx = typecheck_args(self.params, [], self.selfref_ir, self.defns)
-    self.inds_ctx = typecheck_args(self.indices, self.params_ctx, self.selfref_ir, self.defns)
-    self.ty = self.ty_ir.to_term([])
-    self.defns_ext = DefsExtend(self.defns, {self.name: self.ty})
-    # constructors setup:
-    self.constructors = [
-      ConstructorDef(self, constructor_ir.name, constructor_ir.args, constructor_ir.output_indices)
-      for constructor_ir in constructors
-    ]
-    assert names_unique([constructor.name for constructor in self.constructors]), "Constructor names duplicate with each other."
-    self.constructors_dict = {f"{self.name}.{self.constructors[i].name}": i for i in range(len(self.constructors))}
-    # dicts containing Term types:
-    self.constructor_tys = {
-      constructor.name: selfref_sub(constructor.get_ty(), self.selfref_ir).to_term([])
-      for constructor in self.constructors
-    }
-    self.ind_tys = {}
-    self.used = find_used_defs(
-      self.ty,
-      *[self.constructor_tys[cons_nm] for cons_nm in self.constructor_tys])
-    self.used.discard(self.name) # don't count self-reference as "use"
-  def _get_ty(self):
-    return pi_wrap(pi_wrap(self.sort, self.indices[::-1]), self.params[::-1])
-  def _get_selfref_ir(self):
-    return app_wrap(
-      IrConst(self.name),
-      [IrVar(nm) for nm, _ in self.params]
-    )
-  def get_level(self) -> int:
-    return self.sort.level
-  def get_index_vars(self) -> List[IrNode]:
-    """ Get a list of vars corresponding to this inductive's indices.
-        Note: Assumes that the vars will be present somewhere in the context. """
-    return [IrVar(index_nm) for index_nm, _ in self.indices]
-  def get_motive_ty(self, output_ty:IrNode) -> IrNode:
-    """ get the type of a motive (inductive hypothesis) with a particular output type """
-    return pi_wrap(
-      IrPi("@instance",
-        IrInductiveSelfRef(self.get_index_vars()),
-        output_ty),
-      self.indices[::-1])
-  def get_ind_ty(self, sort:IrSort) -> IrNode:
-    motive_ty = self.get_motive_ty(sort)
-    ans_ty = self.get_motive_ty(
-      IrApp(
-        app_wrap(
-          IrVar("@motive"),
-          self.get_index_vars()),
-        IrVar("@instance")))
-    constructor_case_fns = [
-      ("@case_" + constructor.name, constructor.get_case_fn_ty())
-      for constructor in self.constructors
-    ]
-    ans_ty = pi_wrap(
-      ans_ty,
-      constructor_case_fns[::-1])
-    return pi_wrap(
-      IrPi("@motive", motive_ty, ans_ty),
-      self.params[::-1])
-  def get_type(self, key:List[str]) -> Term:
-    match key:
-      case ["ind", sortnum]:
-        sortnum = to_positive_int(sortnum)
-        if sortnum is None: raise IndexError("Induction for Type<n> is denoted by ind.<n> with n a non-negative integer.")
-        if sortnum not in self.ind_tys:
-          ind_ty_ir = self.get_ind_ty(IrSort(sortnum))
-          self.ind_tys[sortnum] = selfref_sub(ind_ty_ir, self.selfref_ir).to_term([])
-        return self.ind_tys[sortnum]
-      case [constructor_name]:
-        if constructor_name not in self.constructor_tys:
-          raise IndexError(f"Constructor name {constructor_name} does not exist in this definition.")
-        return self.constructor_tys[constructor_name]
-      case []:
-        return self.ty
-    raise IndexError("InductiveDef couldn't find key {'.'.join(key)}.")
-  def match_reduce(self, key:List[str], argchain: List[Term], defns:Definitions) -> Tuple[Term, List[Term]] | None:
-    match key:
-      case ["ind", sortnum]:
-        sortnum = to_positive_int(sortnum)
-        assert sortnum is not None, f"<n> should be a positive integer in {self.name}.ind.<n>"
-        n_params = len(self.params)
-        n_constructors = len(self.constructors)
-        n_indices = len(self.indices)
-        if len(argchain) < (n_params + 1 + n_constructors + n_indices + 1):
-          return None # too few args
-        # get induction arguments
-        params, argchain = argchain[:n_params], argchain[n_params:]
-        motive, argchain = argchain[0], argchain[1:]
-        cases, argchain = argchain[:n_constructors], argchain[n_constructors:]
-        indices, argchain = argchain[:n_indices], argchain[n_indices:]
-        scrutinee, argchain = argchain[0], argchain[1:]
-        # have to do recursive whnf on the scrutinee, just in case any redexes produce a construtor
-        scru_head, scru_args = to_app_list(scrutinee)
-        scru_head, scru_args = argchain_whnf(scru_head, scru_args, defns)
-        # second part of checking for iota reduction is checking if scrutinee is a constructor
-        match scru_head:
-          case Const(name):
-            if name not in self.constructors_dict: return None # not a constructor for this type
-            cons_idx = self.constructors_dict[name]
-            constructor = self.constructors[cons_idx]
-            if len(scru_args) != n_params + len(constructor.matchred_sig):
-              return None # too few or too many args
-            case_fn_args = []
-            for i, (scru_arg, rec_indices) in enumerate(zip(scru_args[n_params:], constructor.matchred_sig)):
-              case_fn_args.append(scru_arg)
-              if rec_indices is not None:
-                recursive_call = Const(f"{self.name}.ind.{sortnum}")
-                for param in params:
-                  recursive_call = App(recursive_call, param)
-                recursive_call = App(recursive_call, motive)
-                for case_fn in cases:
-                  recursive_call = App(recursive_call, case_fn)
-                for idx_expr in rec_indices:
-                  idx_val = subst_args_as_term_ctx(idx_expr, scru_args[:n_params + i])
-                  recursive_call = App(recursive_call, idx_val)
-                recursive_call = App(recursive_call, scru_arg)
-                case_fn_args.append(recursive_call)
-            case_fn = cases[cons_idx]
-            return case_fn, case_fn_args + argchain
-          case _: # not a constructor
-            return None
-      case _: # callee is not .ind
-        return None
+  Parameters are uniform. Recursive fields must be written as I[indices];
+  function-valued, nested, and mutual recursion are not supported yet.
+  """
+  name, params, indices = declaration.name, declaration.params, declaration.indices
+  constructors, sort = declaration.constructors, declaration.sort
+  if not isinstance(sort, IrSort) or sort.level < 0:
+    raise DefinitionError("Inductive type must end in a non-negative universe.")
+  
+  def extend(
+    binders:list[tuple[Binding, IrNode]], ctx:Env,
+    selfref:IrNode|None=None, constrain_level:bool=False,
+  ) -> Env:
+    depth = len(ctx)
+    for (binding, type_ir) in binders:
+      if selfref is not None: # re-write self references if available
+        type_ir = selfref_sub(type_ir, selfref)
+      ty = type_ir.to_term(module, env_map(ctx, ann_name)) # TODO: performance problem? Can likely ignore
+      level = type_level(ty, ctx)
+      domain = term_eval(ty, LazyEnvMap(ctx, ann_val))
+      if constrain_level and level > sort.level:
+        raise TypecheckError(f"Constructor field {name} exceeds Type{sort.level}.")
+      # update the context and names map
+      ann = (VNeutral(depth, ()), domain, binding)
+      ctx = EnvEntry(ctx, ann)
+      depth += 1
+    return ctx
+  
+  # check inductive params and indices
+  param_ctx = extend(params, EmptyEnv())
+  extend(indices, param_ctx)
+  
+  # overall type of the inductive family
+  family_ty_ir = pi_wrap(sort, (params + indices))
+  family_ty_term = family_ty_ir.to_term(module, EmptyEnv())
+  infer_sort(family_ty_term, EmptyEnv())
+  family_ty = term_eval(family_ty_term, EmptyEnv())
+  
+  # initialize the InductiveInfo (with constructors to be populated later)
+  info = InductiveInfo(TConst(module, (name,)), len(params), len(indices), ())
+  module.add(name, (
+    VContainer(info.ref, len(params) + len(indices), blocked_noforce),
+    family_ty
+  ))
+  
+  # Give ourselves selfref access now that the family has been added to the module
+  param_refs = [IrVar(binder) for binder, _ in params]
+  selfref = app_wrap(IrConst((name,)), param_refs)
+  
+  # Check the constructors
+  constructor_infos = []
+  cases = []
+  binder_motive = Binder("@motive")
+  var_motive = IrVar(binder_motive)
+  for tag, constructor in enumerate(constructors):
+    # constructor typechecking
+    cons_ctx = extend(constructor.args, param_ctx, selfref=selfref, constrain_level=True)
+    if len(constructor.output_indices) != len(indices):
+      raise DefinitionError(f"Constructor {constructor.name} has the wrong number of output indices.")
+    cons_ty_ir = pi_wrap(
+      IrInductiveSelfRef(constructor.output_indices),
+      (params + constructor.args))
+    cons_ty_ir = selfref_sub(cons_ty_ir, selfref)
+    cons_ty = cons_ty_ir.to_term(module, EmptyEnv())
+    infer_sort(cons_ty, EmptyEnv())
+    
+    # build the rule and the branch fn arg dtypes for this constructor
+    binder_rec = Binder("@rec")
+    binder_case = Binder("@case")
+    rule_names = EnvEntry(EnvEntry(EmptyEnv(), binder_rec), binder_case)
+    var_rec = IrVar(binder_rec) # partially applied (still missing indices and scrutinee) induction
+    rule = IrVar(binder_case)  # case handling function
+    case_args = []
+    for binder, type_ir in constructor.args:
+      arg_var = IrVar(binder)
+      # update rule
+      rule_names = EnvEntry(rule_names, binder)
+      rule = IrApp(rule, arg_var)
+      # update case args
+      case_args.append((binder, type_ir))
+      ih_result = get_ih(type_ir, arg_var)
+      if ih_result.ih is not None:
+        args, scrut, ih_indices = ih_result.ih
+        # update rule with recursion
+        rule_args = [IrVar(binder) for binder, _ in args]
+        rule = IrApp(rule, lam_wrap(IrApp(var_rec, app_wrap(arg_var, rule_args)), args))
+        # update case args with recursion
+        ih = pi_wrap(IrApp(app_wrap(var_motive, ih_indices), scrut), args)
+        case_args.append((Binder(f"@ih_{binder.name}"), ih))
+    # finalize rule for this constructor
+    constructor_info = ConstructorInfo(TConst(module, (constructor.name,)),
+      len(constructor.args), rule.to_term(module, rule_names))
+    constructor_infos.append(constructor_info)
+    # finalize branch dtype for this constructor
+    constructed = app_wrap(IrConst((constructor.name,)),
+        param_refs + [IrVar(binder) for binder, _ in constructor.args])
+    case_result = app_wrap(var_motive, constructor.output_indices + [constructed])
+    cases.append((
+      Binder(f"@case{tag}_{constructor.name}"),
+      pi_wrap(case_result, case_args)
+    ))
+    # add this constructor to the module
+    module.add(constructor.name, (
+      VContainer(constructor_info.ref, info.nparams + constructor_info.nfields, blocked_noforce),
+      term_eval(cons_ty, EmptyEnv())
+    ))
+  
+  # update the constructor info now
+  info.constructors = tuple(constructor_infos)
+  
+  # motive type
+  binder_sort = Binder("@sort")
+  var_sort = IrVar(binder_sort) # an extra variable that we add to make induction generic over sorts
+  index_vars = [IrVar(binder) for binder, _ in indices]
+  instance_ty = IrInductiveSelfRef(index_vars)
+  motive_ty = pi_wrap(IrPi(Binder("@instance"), instance_ty, var_sort), indices)
+  
+  # build the inductor type
+  ind_args = []
+  for binder, type_ir in params:
+    ind_args.append((binder, type_ir))
+  ind_args.append((binder_motive, motive_ty))
+  for binder, type_ir in cases:
+    ind_args.append((binder, type_ir))
+  for binder, type_ir in indices:
+    ind_args.append((binder, type_ir))
+  scrutinee_ty = IrInductiveSelfRef(index_vars)
+  scrut_binder = Binder("@scrutinee")
+  var_scrutinee = IrVar(scrut_binder)
+  ind_args.append((scrut_binder, scrutinee_ty))
+  result_ty = IrApp(app_wrap(var_motive, index_vars), var_scrutinee)
+  ind_ty = pi_wrap(result_ty, ind_args)
+  # do selfref substitution
+  ind_ty = selfref_sub(ind_ty, selfref)
+  
+  # make the InductiveModule
+  ind_module = InductiveModule(info, ind_ty.to_term(module, EnvEntry(EmptyEnv(), binder_sort)))
+  module.add(name, ind_module)
+  
+  return info
 
 
 

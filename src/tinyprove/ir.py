@@ -1,85 +1,92 @@
+from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 
 from .core import *
 
 
 """
-This class defines an intermediate representation that is useful for
-parsing and writing code to generate inductive definitions & that
-kind of thing.
+This file defines an intermediate representation that is produced by
+parsing. As it is basically an AST, it is also a good output format
+for automatically generated code.
 """
 
 
+@dataclass(frozen=True, eq=False) # compare by identity only
+class Binder:
+  name: str
+
 class IrNode:
-  def to_term(self, ctx_nm):
-    raise RuntimeError("Not implemented.")
+  def to_term(self, module:Module, binders:Env) -> Term:
+    raise RuntimeError("This IR class cannot be converted to a Term.")
 
 @dataclass(frozen=True)
 class IrSort(IrNode):
-  level: int
-  def to_term(self, ctx_nm):
-    if self.level >= 0:
-      return Sort(self.level)
-    else:
-      raise RuntimeError("IrSort: level must be >= 0.")
+  level: int # Need: level >= 0
+  def to_term(self, module:Module, binders:Env) -> Term:
+    return TSort(self.level)
 
 @dataclass(frozen=True)
 class IrConst(IrNode):
-  constnm: str
-  def to_term(self, ctx_nm):
-    if self.constnm in ctx_nm:
-      raise RuntimeError(f"Constant name {self.constnm} unexpectedly found in context when converting IrConst to term.")
-    return Const(self.constnm)
+  path: Tuple[str]
+  def to_term(self, module:Module, binders:Env) -> Term:
+    module[self.path] # reject unresolved references
+    return TConst(module, self.path)
 
 @dataclass(frozen=True)
 class IrVar(IrNode):
-  varnm: str
-  def to_term(self, ctx_nm):
-    for i in range(len(ctx_nm)):
-      if ctx_nm[i] == self.varnm:
-        return Var(i)
-    raise RuntimeError(f"Variable name {self.varnm} not found in context when converting IrVar to term.")
+  binder: Binder
+  def to_term(self, module:Module, binders:Env) -> Term:
+    idx = binders.index_of(self.binder)
+    if idx == -1:
+      raise LookupError(f"Variable {self.binder.name}'s binder not in scope.")
+    return TVar(idx)
 
 @dataclass(frozen=True)
 class IrPi(IrNode):
-  param: str
+  param: Binder
   A: IrNode
   B: IrNode
-  def to_term(self, ctx_nm):
-    return Pi(
-      self.param,
-      self.A.to_term(ctx_nm),
-      self.B.to_term([self.param] + ctx_nm))
+  def to_term(self, module:Module, binders:Env) -> Term:
+    return TPi(
+      self.param.name,
+      self.A.to_term(module, binders),
+      self.B.to_term(module, EnvEntry(binders, self.param)))
 
 @dataclass(frozen=True)
 class IrLam(IrNode):
-  param: str
-  A: IrNode
+  param: Binder
+  A: IrNode | None
   body: IrNode
-  def to_term(self, ctx_nm):
-    return Lam(
-      self.param,
-      self.A.to_term(ctx_nm),
-      self.body.to_term([self.param] + ctx_nm))
+  def to_term(self, module:Module, binders:Env) -> Term:
+    A = None if self.A is None else self.A.to_term(module, binders)
+    return TLam(
+      self.param.name,
+      A,
+      self.body.to_term(module, EnvEntry(binders, self.param)))
+
+@dataclass(frozen=True)
+class IrLet(IrNode):
+  name: Binder
+  A: IrNode | None
+  rhs: IrNode
+  body: IrNode
+  def to_term(self, module:Module, binders:Env) -> Term:
+    A = None if self.A is None else self.A.to_term(module, binders)
+    return TLet(
+      self.name.name,
+      A,
+      self.rhs.to_term(module, binders),
+      self.body.to_term(module, EnvEntry(binders, self.name)))
+      
 
 @dataclass(frozen=True)
 class IrApp(IrNode):
   fn: IrNode
   arg: IrNode
-  def to_term(self, ctx_nm):
-    return App(
-      self.fn.to_term(ctx_nm),
-      self.arg.to_term(ctx_nm))
-
-
-# utility function(s) for various users of this file:
-def to_positive_int(digits:str) -> int | None:
-  try:
-    val = int(digits)
-  except ValueError:
-    return None
-  if val < 0: return None
-  return val
+  def to_term(self, module:Module, binders:Env):
+    return TApp(
+      self.fn.to_term(module, binders),
+      self.arg.to_term(module, binders))
 
 
 # IR node for constant definitions:
@@ -88,10 +95,12 @@ class IrConstantDefinition(IrNode):
   name: str
   value: IrNode
   expected_ty: Optional[IrNode]
-  def to_term(self, ctx_nm):
-    raise RuntimeError("Can't convert IrConstantDefinition to Term, it is intended for defining constants only.")
-  def to_definition(self, defns: Definitions):
-    expected_ty = self.expected_ty.to_term([]) if self.expected_ty is not None else None
-    return ConstDefinition(self.name, self.value.to_term([]), defns, expected_ty)
+  def apply(self, module:Module):
+    value = self.value.to_term(module, EmptyEnv())
+    expected_ty = (
+      None if self.expected_ty is None else
+      self.expected_ty.to_term(module, EmptyEnv())
+    )
+    define(module, self.name, value, expected_ty)
 
 
