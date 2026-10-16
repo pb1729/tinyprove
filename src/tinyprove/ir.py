@@ -42,6 +42,17 @@ class IrVar(IrNode):
     return TVar(idx)
 
 @dataclass(frozen=True)
+class IrNatLit(IrNode):
+  val: int # Requirement: must be non-negative
+  def to_term(self, module:Module, binders:Env) -> Term:
+    return TNatLit(self.val)
+
+@dataclass(frozen=True)
+class IrNat(IrNode):
+  def to_term(self, module:Module, binders:Env) -> Term:
+    return TNat()
+
+@dataclass(frozen=True)
 class IrPi(IrNode):
   param: Binder
   A: IrNode

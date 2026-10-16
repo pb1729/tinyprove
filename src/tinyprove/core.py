@@ -65,6 +65,17 @@ class TVar(Term):
     return name + "'" * skipped # add ticks to disambiguate collisions
 
 @dataclass(frozen=True)
+class TNatLit(Term):
+  val: int # Requirement: must be non-negative
+  def str(self, ctx:Env):
+    return f"{self.val}"
+
+@dataclass(frozen=True)
+class TNat(Term):
+  def str(self, ctx:Env):
+    return "ℕ"
+
+@dataclass(frozen=True)
 class TApp(Term):
   head: Term
   arg: Term
@@ -261,6 +272,14 @@ class VSort(Value):
   level: int
 
 @dataclass(frozen=True)
+class VNatLit(Value):
+  val: int # Requirement: must be non-negative
+
+@dataclass(frozen=True)
+class VNat(Value):
+  pass
+
+@dataclass(frozen=True)
 class VLam(Value):
   body: Closure
 
@@ -325,6 +344,10 @@ def term_eval(term:Term, env:Env) -> Value:
       return def_val(module[path]).force()
     case TVar(idx):
       return env.at(idx).force()
+    case TNatLit(val):
+      return VNatLit(val)
+    case TNat():
+      return VNat()
     case TApp(head, arg):
       head_val = term_eval(head, env)
       arg_bind = Thunk(arg, env)
@@ -351,6 +374,10 @@ def quote(val:Binding, depth:int=0) -> Term:
   match val:
     case VSort(level):
       return TSort(level)
+    case VNatLit(val):
+      return TNatLit(val)
+    case VNat():
+      return TNat()
     case VLam(body):
       arg = VNeutral(depth, ())
       return TLam(f"x{depth}", None, quote(body.apply(arg), depth + 1)) # codomain is unknown
@@ -376,6 +403,10 @@ def conv(a:Binding, b:Binding, depth:int=0, accept_assignable:bool=False) -> boo
   match a, b:
     case VSort(i), VSort(j):
       return i == j or (accept_assignable and i <= j)
+    case VNatLit(n), VNatLit(m):
+      return n == m
+    case VNat(), VNat():
+      return True
     case VNeutral(i, xs), VNeutral(j, ys):
       return i == j and conv_args(xs, ys, depth)
     case VPi(A, B), VPi(C, D):
@@ -447,6 +478,10 @@ def infer(term:Term, ctx:Env) -> Value:
       if not 0 <= idx < depth:
         raise TypecheckError(f"Variable index {idx} outside context of size {depth}.")
       return ann_ty(ctx[idx])
+    case TNatLit(_):
+      return VNat()
+    case TNat():
+      return VSort(0) # TODO: is this too restrictive?
     case TPi(param, A, B):
       level_A = infer_sort(A, ctx)
       domain = term_eval(A, LazyEnvMap(ctx, ann_val))

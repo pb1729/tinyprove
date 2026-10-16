@@ -2,11 +2,15 @@ import re
 from typing import List, Tuple
 
 from .core import Env, EmptyEnv, EnvEntry
-from .ir import Binder, IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrLet, IrApp, IrConstantDefinition
+from .ir import (
+  IrNode, IrSort, IrConst, IrNatLit, IrNat, IrVar, IrPi, IrLam, IrLet, IrApp,
+  IrConstantDefinition, Binder )
 from .inductive import IrInductiveSelfRef, IrConstructorDefinition, IrInductiveDefinition
 
 
 # Tokeniser:
+_nat_lit_re = r"[0-9]+"
+_nat_re = r"ℕ"
 _first_symb_re = r"[A-Za-z_\|\&\+\*−≡¬⊥⊤<>]"
 _rest_symb_re = r"(" + _first_symb_re + r"|[0-9])"
 _name_re = _first_symb_re + _rest_symb_re + r"*"
@@ -17,7 +21,9 @@ _token_re = re.compile(
   (                                   # group captures only non-whitespace
       =>|->|                          # separators
       [\[\]()\{\},:=λΠι]|             # punctuation (parens, lambdas, etc.)
-      """ + _ident_re + """           # identifiers
+      """ + _ident_re + """|          # identifiers
+      """ + _nat_re + """ |           # natural number datatype
+      """ + _nat_lit_re + """         # natural number literals
   )
   \s*                                 # skip trailing whitespace
   """,
@@ -260,6 +266,13 @@ class Parser:
       if level is not None:
         self._eat()
         return IrSort(level)
+    # Nat literals & datatype
+    if re.match(_nat_lit_re, tok):
+      self._eat()
+      return IrNatLit(int(tok))
+    if re.match(_nat_re, tok):
+      self._eat()
+      return IrNat()
     # Identifiers (variables / constants)
     if re.match(_ident_re, tok):
       self._eat()
