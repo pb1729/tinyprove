@@ -50,11 +50,10 @@ def get_ind_reduce(info:InductiveInfo, level:int) -> VContainer:
       case VContainer(head_ref, nargs, fn, params_fields):
         for tag, cons_info in enumerate(info.constructors):
           if head_ref._get_def_id() == cons_info.ref._get_def_id():
-            fields = params_fields[i_motive:]
             val_rec = get_rec(rec, args)
             branch = args[i_branches + tag]
             env = EnvEntry(EnvEntry(EmptyEnv(), val_rec), branch)
-            for binding in fields:
+            for binding in params_fields:
               env = EnvEntry(env, binding)
             result = term_eval(cons_info.rule, env)
             return result
@@ -193,7 +192,7 @@ class GetIHResult:
   copy: IrNode|None
   ih: tuple[List[tuple[Binder, IrNode]], IrNode, tuple[IrNode, ...]]|None
 
-def get_ih(arg_ty:IrNode, original_arg:IrVar, domain_depth:int=0) -> GetIHResult:
+def get_ih(arg_ty:IrNode, original_arg:IrNode, domain_depth:int=0) -> GetIHResult:
   """ This function recursively walks the entire arg_ty syntax tree.
       We raise a definition error if we encounter something disallowed.
       domain_depth allows us to perform positivity checking, & distinguish strict positivity. """
@@ -216,7 +215,7 @@ def get_ih(arg_ty:IrNode, original_arg:IrVar, domain_depth:int=0) -> GetIHResult
       return GetIHResult(IrApp(fn_res.copy, arg_res.copy), None)
     case IrPi(param, A, B):
       A_res = get_ih(A, original_arg, domain_depth=domain_depth + 1)
-      B_res = get_ih(B, original_arg, domain_depth=domain_depth)
+      B_res = get_ih(B, IrApp(original_arg, IrVar(param)), domain_depth=domain_depth)
       if A_res.copy is None or B_res.copy is None:
         copy = None
       else:
@@ -226,7 +225,6 @@ def get_ih(arg_ty:IrNode, original_arg:IrVar, domain_depth:int=0) -> GetIHResult
       else:
         B_args, B_scrut, B_indices = B_res.ih
         B_args = [(param, A_res.copy)] + B_args
-        B_scrut = IrApp(B_scrut, IrVar(param))
         ih = (B_args, B_scrut, B_indices)
       return GetIHResult(copy, ih)
     case IrInductiveSelfRef(indices):
@@ -240,14 +238,7 @@ def get_ih(arg_ty:IrNode, original_arg:IrVar, domain_depth:int=0) -> GetIHResult
       return GetIHResult(copy, ih)
     case _:
       raise DefinitionError(f"Unexpected IrNode type {type(arg_ty)}.")
-      
-def type_level(ty:Term, ctx:Env) -> int:
-  """ Compute the effective universe level for a constructor field. """
-  match ty:
-    case TSort(level):
-      return level
-    case _:
-      return infer_sort(ty, ctx)
+
 
 def define_inductive(module:Module, declaration:IrInductiveDefinition) -> InductiveInfo:
   """ Check and install an inductive. Roll back all entries if checking fails.
@@ -261,27 +252,28 @@ def define_inductive(module:Module, declaration:IrInductiveDefinition) -> Induct
     raise DefinitionError("Inductive type must end in a non-negative universe.")
   
   def extend(
-    binders:list[tuple[Binding, IrNode]], ctx:Env,
+    binders:list[tuple[Binder, IrNode]], typing_ctx:Env, binder_ctx:Env,
     selfref:IrNode|None=None, constrain_level:bool=False,
   ) -> Env:
-    depth = len(ctx)
-    for (binding, type_ir) in binders:
+    depth = len(typing_ctx)
+    for (binder, type_ir) in binders:
       if selfref is not None: # re-write self references if available
         type_ir = selfref_sub(type_ir, selfref)
-      ty = type_ir.to_term(module, env_map(ctx, ann_name)) # TODO: performance problem? Can likely ignore
-      level = type_level(ty, ctx)
-      domain = term_eval(ty, LazyEnvMap(ctx, ann_val))
+      ty = type_ir.to_term(module, binder_ctx)
+      level = infer_sort(ty, typing_ctx)
+      domain = term_eval(ty, LazyEnvMap(typing_ctx, ann_val))
       if constrain_level and level > sort.level:
         raise TypecheckError(f"Constructor field {name} exceeds Type{sort.level}.")
       # update the context and names map
-      ann = (VNeutral(depth, ()), domain, binding)
-      ctx = EnvEntry(ctx, ann)
+      ann = (VNeutral(depth, ()), domain, binder.name)
+      typing_ctx = EnvEntry(typing_ctx, ann)
+      binder_ctx = EnvEntry(binder_ctx, binder)
       depth += 1
-    return ctx
+    return typing_ctx, binder_ctx
   
   # check inductive params and indices
-  param_ctx = extend(params, EmptyEnv())
-  extend(indices, param_ctx)
+  param_ctx, param_binder_ctx = extend(params, EmptyEnv(), EmptyEnv())
+  extend(indices, param_ctx, param_binder_ctx)
   
   # overall type of the inductive family
   family_ty_ir = pi_wrap(sort, (params + indices))
@@ -307,7 +299,7 @@ def define_inductive(module:Module, declaration:IrInductiveDefinition) -> Induct
   var_motive = IrVar(binder_motive)
   for tag, constructor in enumerate(constructors):
     # constructor typechecking
-    cons_ctx = extend(constructor.args, param_ctx, selfref=selfref, constrain_level=True)
+    cons_ctx = extend(constructor.args, param_ctx, param_binder_ctx, selfref=selfref, constrain_level=True)
     if len(constructor.output_indices) != len(indices):
       raise DefinitionError(f"Constructor {constructor.name} has the wrong number of output indices.")
     cons_ty_ir = pi_wrap(
@@ -321,6 +313,8 @@ def define_inductive(module:Module, declaration:IrInductiveDefinition) -> Induct
     binder_rec = Binder("@rec")
     binder_case = Binder("@case")
     rule_names = EnvEntry(EnvEntry(EmptyEnv(), binder_rec), binder_case)
+    for param_binder, _ in params: # indices can reference params, so we add them to the env
+      rule_names = EnvEntry(rule_names, param_binder)
     var_rec = IrVar(binder_rec) # partially applied (still missing indices and scrutinee) induction
     rule = IrVar(binder_case)  # case handling function
     case_args = []
@@ -335,8 +329,8 @@ def define_inductive(module:Module, declaration:IrInductiveDefinition) -> Induct
       if ih_result.ih is not None:
         args, scrut, ih_indices = ih_result.ih
         # update rule with recursion
-        rule_args = [IrVar(binder) for binder, _ in args]
-        rule = IrApp(rule, lam_wrap(IrApp(var_rec, app_wrap(arg_var, rule_args)), args))
+        recursive_call = IrApp(app_wrap(var_rec, ih_indices), scrut)
+        rule = IrApp(rule, lam_wrap(recursive_call, args))
         # update case args with recursion
         ih = pi_wrap(IrApp(app_wrap(var_motive, ih_indices), scrut), args)
         case_args.append((Binder(f"@ih_{binder.name}"), ih))

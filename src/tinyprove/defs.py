@@ -3,6 +3,7 @@ from typing import List, Tuple
 from .parser import parse
 from .core import Module, TConst, Binding, Value, VContainer, EvalError, EmptyEnv, term_eval
 from .ir import Binder, IrSort, IrConst, IrVar, IrPi, IrApp
+from .inductive import InductiveModule
 
 
 USUAL_AXIOMS_SRC = """
@@ -48,6 +49,17 @@ USUAL_AXIOMS_SRC = """
 """
 
 
+def flat_import(module:Module, mod_from:Module):
+  """ add all constants from mod_from to module
+      MUTATES module
+      WARNING: If this operation fails, module could be in inconsistent state! """
+  assert not isinstance(module, InductiveModule), "Can't import into InductiveModule."
+  assert not isinstance(mod_from, InductiveModule), "Can't flat-import InductiveModule."
+  for name in mod_from.entries:
+    module.add(name, mod_from.entries[name])
+  for name in mod_from.submodules:
+    module.add(name, mod_from.submodules[name])
+
 def def_module(src:str, imports:List[Tuple[str, Module]]|None=None) -> Module:
   ans = Module()
   # parse source
@@ -55,7 +67,10 @@ def def_module(src:str, imports:List[Tuple[str, Module]]|None=None) -> Module:
   # perform imports
   imports = [] if imports is None else imports
   for name, module in imports:
-    ans.add(name, module)
+    if name == "":
+      flat_import(ans, module)
+    else:
+      ans.add(name, module)
   # new definitions from source code
   for definition in definitions:
     definition.apply(ans)
