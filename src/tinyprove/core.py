@@ -24,7 +24,7 @@ class Value(Binding):
     return self
 
 class Axiom(Binding):
-  """ A binding with constructive/computational content. Raises an Error when forced. """
+  """ A binding with no constructive/computational content. Raises an Error when forced. """
   def force(self) -> Value:
     raise EvalError("Can't force an Axiom.")
 
@@ -425,6 +425,14 @@ def conv(a:Binding, b:Binding, depth:int=0, accept_assignable:bool=False) -> boo
         raise EvalError(f"Expected identical VContainers to have same args, but {nargs_a} != {nargs_b}.")
       # expect that functions should also be identical, but we have no way to check this
       return conv_args(args_a, args_b, depth)
+    case (
+        (VLam(body), VContainer(head_ref, nargs, _, args, _)) | # two possible orderings
+        (VContainer(head_ref, nargs, _, args, _), VLam(body))
+    ): # this case handles eta reduction between callable VContainer and lambda
+      if len(args) == nargs: return False # a blocked VContainer cannot compare equal to a function
+      container = a if isinstance(a, VContainer) else b # bleh
+      x = VNeutral(depth, ())
+      return conv(body.apply(x), container.apply(x), depth + 1)
     case val, other:
       return False
 
