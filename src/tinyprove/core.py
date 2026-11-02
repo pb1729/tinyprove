@@ -494,12 +494,15 @@ def quote(val:Binding, depth:int=0) -> Term:
       raise EvalError(f"Unknown value {val}")
 
 
-def is_fn(fn: Value) -> bool:
+def is_fn(fn: Value) -> bool|None:
+  """ True/False verdict for function, or None if it's a VNeutral """
   match fn:
     case VLam(_):
       return True
     case VPartial(_, _, _, _, _): # fn is a Value, not Binding, so we know it's not fully applied
       return True
+    case VNeutral(_, _):
+      return None
   return False
 
 
@@ -508,7 +511,9 @@ def conv(a:Binding, b:Binding, depth:int=0, accept_assignable:bool=False) -> boo
       default. If accept_assignable is True, we instead check if `a` is assignable to `b`. """
   a, b = a.force(), b.force()
   # first we compare callable values
-  if is_fn(a) or is_fn(b):
+  fn_kind_a = is_fn(a)
+  fn_kind_b = is_fn(b)
+  if (fn_kind_a != False and fn_kind_b != False) and (fn_kind_a or fn_kind_b):
     x = VNeutral(depth, ()) # introduce a fresh neutral
     return conv(vapp(a, x), vapp(b, x), depth + 1)
   # now we compare all the other kinds of things
