@@ -28,6 +28,10 @@ class Axiom(Binding):
   def force(self) -> Value:
     raise EvalError("Can't force an Axiom.")
 
+class Elimination:
+  """ An Elimination is something that can be blocked by a free variable. """
+  pass
+
 class Term:
   """ Base class for an expression in the language """
   pass
@@ -74,6 +78,11 @@ class TNatLit(Term):
 class TNat(Term):
   def str(self, ctx:Env):
     return "ℕ"
+
+@dataclass(frozen=True)
+class TSucc(Term):
+  def str(self, ctx:Env):
+    return "σ"
 
 @dataclass(frozen=True)
 class TApp(Term):
@@ -265,6 +274,22 @@ class Closure:
     return term_eval(self.term, EnvEntry(self.env, arg))
 
 
+# Elimination concrete classes:
+
+@dataclass(frozen=True)
+class EApp(Elimination):
+  arg: Binding
+
+@dataclass(frozen=True)
+class EInd(Elimination):
+  ind_ref: TConst
+  args: tuple[Binding]
+
+@dataclass(frozen=True)
+class EAdd(Elimination):
+  a: int
+
+
 # Value concrete classes:
 
 @dataclass(frozen=True)
@@ -292,47 +317,100 @@ class VPi(Value):
 class VNeutral(Value):
   """ An expression that cannot be reduced due to occurence of a free variable in the head """
   head_level: int
-  args: tuple[Binding, ...]
+  args: tuple[Elimination, ...]
+  def add(self, n:int) -> VNeutral:
+    """ Apply σ n times to this VNeutral.
+        Invariant: EAdd(a) always has a > 0
+        Invariant: Two EAdd's never appear in a row (they're combined instead) """
+    if n == 0: return self
+    if len(self.args) > 0:
+      match self.args[-1]:
+        case EAdd(a):
+          new_args = self.args[:-1] + (EAdd(a + n),)
+          return VNeutral(self.head_level, new_args)
+    new_args = self.args + (EAdd(n),)
+    return VNeutral(self.head_level, new_args)
 
 @dataclass(frozen=True)
-class VContainer(Value):
-  """ A Binding/Value. A VContainer is a box that holds values.
-      We apply some python function when we have the necessary args.
-      Convention for the function: If it returns None, this means we're blocked.
-      Convention for the function: Args are passed as tuple. The function itself is
-      passed too, so that we can do recursion.
-      Convention for the function: Returned Value's must be WHNF (head non-reducible)
-      Note that len(args) can exceed nargs if we're blocked. """
+class VCons(Value):
+  cons_ref: TConst
+  tag: int
+  params_fields: tuple[Binding, ...]
+
+@dataclass(frozen=True)
+class VIndType(Value):
+  ref: TConst
+  params_indices: tuple[Binding, ...]
+
+@dataclass(frozen=True)
+class VPartial(Value):
+  """ A VPartial represents a multi-argument function that does not have all
+      of its arguments yet. We apply the python function fn when we do have them.
+      The function accepts a copy of itself and a tuple of Bindings and returns
+      a Value. The copy of itself is to allow recursive functions to be used.
+      For quoting purposes, there is head_ref, which gives the Term for the fn
+      when 0 args are applied.
+      Typing convention: A VPartial where len(args) == nargs is considered to be
+      a Binding only, not a Value. """
   head_ref: TConst
   nargs: int
-  fn: object # function from copy of itself & tuple of nargs Binding's to Value|None
-  args: tuple[Binding] = ()
+  fn: object
+  args: tuple[Binding, ...] = ()
   cache: Cache = field(default_factory=Cache)
   def force(self) -> Value:
-    """ Override the usual Value.force() to handle fn application. """
     if self.cache.is_empty():
       if len(self.args) == self.nargs:
         result = self.fn(self.fn, self.args)
-        if result is None: result = self # None means evaluation is blocked
-      else:
-        result = self # insufficient args means evaluation is blocked
-      self.cache.set(result) 
+      else: # partially applied VPartial just gives us a VPartial
+        result = self
+      self.cache.set(result)
     return self.cache.get()
   def apply(self, arg:Binding) -> Value:
     newargs = self.args + (arg,)
-    return VContainer(self.head_ref, self.nargs, self.fn, newargs).force()
+    return VPartial(self.head_ref, self.nargs, self.fn, newargs).force()
 
 
 # ...
+
+def add_to(a:int, n:Binding) -> Value:
+  n = n.force()
+  match n:
+    case VNatLit(nn):
+      return VNatLit(a + nn)
+    case VNeutral(_, _):
+      return n.add(a)
+    case _:
+      raise EvalError(f"Can't add to value {n}")
+
+def get_partial_for_succ() -> VPartial:
+  def succ(rec, args:tuple[Binding, ...]) -> Value:
+    n, = args
+    return add_to(1, n)
+  return VPartial(TSucc(), 1, succ)
+
+def get_partial_for_nat(val:int, P:Binding) -> VPartial:
+  """ makes a given VNatLit as a VPartial, with first P arg already applied.
+      this is a hack so we can make Nat literals callable. """
+  def iterate(rec, args:tuple[Binding, ...]) -> Value:
+    P, f, b = args
+    if val == 0:
+      return b.force()
+    f = f.force()
+    for i in range(val):
+      b = vapp(f, b)
+    return b
+  return VPartial(TNatLit(val), 3, iterate, (P,))
 
 def vapp(fn:Value, arg:Binding) -> Value:
   match fn:
     case VLam(body):
       return body.apply(arg)
     case VNeutral(head_level, args):
-      return VNeutral(head_level, args + (arg,))
-    case VContainer(_, nargs, _, args, _):
+      return VNeutral(head_level, args + (EApp(arg),))
+    case VPartial(_, _, _, _, _):
       return fn.apply(arg)
+    case VNatLit(val):
+      return get_partial_for_nat(val, arg)
     case _:
       raise EvalError(f"Uncallable value {fn}")
 
@@ -348,6 +426,8 @@ def term_eval(term:Term, env:Env) -> Value:
       return VNatLit(val)
     case TNat():
       return VNat()
+    case TSucc():
+      return get_partial_for_succ()
     case TApp(head, arg):
       head_val = term_eval(head, env)
       arg_bind = Thunk(arg, env)
@@ -368,14 +448,30 @@ def quote_apps(head:Term, args:tuple[Binding, ...], depth:int) -> Term:
     head = TApp(head, quote(arg, depth))
   return head
 
+def quote_elims(head:Term, elims:tuple[Elimination, ...], depth:int) -> Term:
+  for elim in elims:
+    match elim:
+      case EApp(arg):
+        head = TApp(head, quote(arg, depth))
+      case EInd(ind_ref, args):
+        icall = ind_ref
+        for arg in args:
+          icall = TApp(icall, quote(arg, depth))
+        head = TApp(icall, head) # for inductive elimination, the head is the scrutinee
+      case EAdd(a):
+        head = TApp(TApp(TApp(TNatLit(a), TNat()), TSucc()), head)
+      case _:
+        raise EvalError(f"Unrecognized elimination {elim}")
+  return head
+
 def quote(val:Binding, depth:int=0) -> Term:
   """ Reify a value. Quoted lambdas need an expected type when checked. """
   val = val.force() # convert to Value
   match val:
     case VSort(level):
       return TSort(level)
-    case VNatLit(val):
-      return TNatLit(val)
+    case VNatLit(n):
+      return TNatLit(n)
     case VNat():
       return TNat()
     case VLam(body):
@@ -384,22 +480,38 @@ def quote(val:Binding, depth:int=0) -> Term:
     case VPi(A, B):
       arg = VNeutral(depth, ())
       return TPi(f"x{depth}", quote(A, depth), quote(B.apply(arg), depth + 1))
-    case VNeutral(head_level, args):
+    case VNeutral(head_level, elims):
       assert 0 <= head_level < depth
       idx = depth - head_level - 1
-      return quote_apps(TVar(idx), args, depth)
-    case VContainer(head_ref, _, _, args, _):
+      return quote_elims(TVar(idx), elims, depth)
+    case VCons(cons_ref, tag, params_fields):
+      return quote_apps(cons_ref, params_fields, depth)
+    case VIndType(ref, params_indices):
+      return quote_apps(ref, params_indices, depth)
+    case VPartial(head_ref, _, _, args, _):
       return quote_apps(head_ref, args, depth)
     case _:
-      if hasattr(val, "quote"):
-        return val.quote(depth)
       raise EvalError(f"Unknown value {val}")
+
+
+def is_fn(fn: Value) -> bool:
+  match fn:
+    case VLam(_):
+      return True
+    case VPartial(_, _, _, _, _): # fn is a Value, not Binding, so we know it's not fully applied
+      return True
+  return False
 
 
 def conv(a:Binding, b:Binding, depth:int=0, accept_assignable:bool=False) -> bool:
   """ Check structural equality for two values. The check is exact and symmetric by
       default. If accept_assignable is True, we instead check if `a` is assignable to `b`. """
   a, b = a.force(), b.force()
+  # first we compare callable values
+  if is_fn(a) or is_fn(b):
+    x = VNeutral(depth, ()) # introduce a fresh neutral
+    return conv(vapp(a, x), vapp(b, x), depth + 1)
+  # now we compare all the other kinds of things
   match a, b:
     case VSort(i), VSort(j):
       return i == j or (accept_assignable and i <= j)
@@ -408,36 +520,46 @@ def conv(a:Binding, b:Binding, depth:int=0, accept_assignable:bool=False) -> boo
     case VNat(), VNat():
       return True
     case VNeutral(i, xs), VNeutral(j, ys):
-      return i == j and conv_args(xs, ys, depth)
+      return i == j and conv_elims(xs, ys, depth)
     case VPi(A, B), VPi(C, D):
       x = VNeutral(depth, ())
       return ( # NOTE: we preserve the accept_assignable flag for Pi types
         conv(C, A, depth, accept_assignable) and  # swap argument order to ensure contravariance
         conv(B.apply(x), D.apply(x), depth + 1, accept_assignable) # same order for covariance
       )
-    case VLam(body), VLam(other):
-      x = VNeutral(depth, ())
-      return conv(body.apply(x), other.apply(x), depth + 1)
-    case VContainer(head_ref_a, nargs_a, _, args_a, _), VContainer(head_ref_b, nargs_b, _, args_b, _):
-      if head_ref_a._get_def_id() != head_ref_b._get_def_id():
-        return False
-      if nargs_a != nargs_b:
-        raise EvalError(f"Expected identical VContainers to have same args, but {nargs_a} != {nargs_b}.")
-      # expect that functions should also be identical, but we have no way to check this
-      return conv_args(args_a, args_b, depth)
-    case (
-        (VLam(body), VContainer(head_ref, nargs, _, args, _)) | # two possible orderings
-        (VContainer(head_ref, nargs, _, args, _), VLam(body))
-    ): # this case handles eta reduction between callable VContainer and lambda
-      if len(args) == nargs: return False # a blocked VContainer cannot compare equal to a function
-      container = a if isinstance(a, VContainer) else b # bleh
-      x = VNeutral(depth, ())
-      return conv(body.apply(x), container.apply(x), depth + 1)
-    case val, other:
-      return False
+    case VCons(ref_a, tag_a, params_fields_a), VCons(ref_b, tag_b, params_fields_b):
+      return (ref_a._get_def_id() == ref_b._get_def_id() and tag_a == tag_b and
+        conv_args(params_fields_a, params_fields_b, depth))
+    case VIndType(ref_a, params_indices_a), VIndType(ref_b, params_indices_b):
+      return (ref_a._get_def_id() == ref_b._get_def_id() and
+        conv_args(params_indices_a, params_indices_b, depth))
+  return False
 
-def conv_args(xs, ys, depth):
-  return len(xs) == len(ys) and all(conv(x, y, depth) for x, y in zip(xs, ys))
+def conv_args(xs:tuple[Binding, ...], ys:tuple[Binding, ...], depth:int) -> bool:
+  return (len(xs) == len(ys) and
+    all(
+      conv(x, y, depth)
+      for x, y in zip(xs, ys)
+    ))
+
+def conv_elim(x:Elim, y:Elim, depth:int) -> bool:
+  match x, y:
+    case EApp(a), EApp(b):
+      return conv(a, b, depth)
+    case EInd(ref_x, args_x), EInd(ref_y, args_y):
+      return (ref_x._get_def_id() == ref_y._get_def_id() and
+        conv_args(args_x, args_y, depth))
+    case EAdd(a), EAdd(b):
+      return a == b
+  return False
+
+def conv_elims(xs:tuple[Elim, ...], ys:tuple[Elim, ...], depth:int) -> bool:
+  return (len(xs) == len(ys) and
+    all(
+      conv_elim(x, y, depth)
+      for x, y in zip(xs, ys)
+    ))
+  
 
 
 def debug_str(term:Term, ctx:Env) -> str:
@@ -489,7 +611,9 @@ def infer(term:Term, ctx:Env) -> Value:
     case TNatLit(_):
       return VNat()
     case TNat():
-      return VSort(0) # TODO: is this too restrictive?
+      return VSort(0)
+    case TSucc():
+      return VPi(VNat(), Closure(TNat(), EmptyEnv()))
     case TPi(param, A, B):
       level_A = infer_sort(A, ctx)
       domain = term_eval(A, LazyEnvMap(ctx, ann_val))
@@ -505,10 +629,20 @@ def infer(term:Term, ctx:Env) -> Value:
       return VPi(domain, Closure(quote(body_ty, depth + 1), env)) # call quote because Closure needs a Term
     case TApp(fn, arg):
       fn_ty = infer(fn, ctx)
-      if not isinstance(fn_ty, VPi):
-        raise TypecheckError(f"Expected a function, got {debug_str(fn, ctx)}.")
-      check(arg, fn_ty.A.force(), ctx)
-      return fn_ty.B.apply(Thunk(arg, LazyEnvMap(ctx, ann_val)))
+      match fn_ty:
+        case VPi(A, B): # usual case: fn is a function
+          check(arg, A.force(), ctx)
+          return B.apply(Thunk(arg, LazyEnvMap(ctx, ann_val)))
+        case VNat(): # typing logic to make Nat's callable
+          env = LazyEnvMap(ctx, ann_val)
+          infer_sort(arg, ctx)
+          P = term_eval(arg, env)
+          # make (P => P) => P => P
+          P_wrap_1 = Closure(quote(P, depth + 1), env)
+          P_wrap_2 = Closure(quote(VPi(P, P_wrap_1), depth + 1), env) # TODO: repeat twice? yuck.
+          return VPi(VPi(P, P_wrap_1), P_wrap_2)
+        case _:
+          raise TypecheckError(f"Expected a function, got {debug_str(fn, ctx)}.")
     case TLet(_, _, _, _):
       body, body_ctx = get_let_body_term(term, ctx)
       return infer(body, body_ctx)

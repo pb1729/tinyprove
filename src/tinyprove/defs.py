@@ -1,7 +1,7 @@
 from typing import List, Tuple
 
 from .parser import parse
-from .core import Module, TConst, Binding, Value, VContainer, EvalError, EmptyEnv, term_eval
+from .core import Module, TConst, Binding, Axiom, Value, EvalError, EmptyEnv, term_eval
 from .ir import Binder, IrSort, IrConst, IrVar, IrPi, IrApp
 from .inductive import InductiveModule
 
@@ -79,11 +79,8 @@ def def_module(src:str, imports:List[Tuple[str, Module]]|None=None) -> Module:
 def force_axiom(name:str, ty:Value, module:Module):
   """ MUTATES module
       WARNING: Overrides type checking and can break soundness! """
-  ref = TConst(module, (name,))
-  def instant_fail(rec, args:tuple[Binding]): # VContainer fn that immediately throws an error
-    raise EvalError(f"Cannot concretely instantiate axiom {name}.")
-  val = VContainer(ref, 0, instant_fail)
-  module.add(name, (val, ty))
+  binding = Axiom()
+  module.add(name, (binding, ty))
 
 def get_lem(module: Module) -> Value:
   """ Assumes the host Module has the usual definitions of `|`, `¬`. """

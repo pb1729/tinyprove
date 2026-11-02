@@ -6,7 +6,8 @@ from .core import (
   Binding, Value, Term, Module, Env,
   LookupError, TypecheckError, DefinitionError, EvalError,
   TSort, TVar, TConst, TLam,
-  VSort, VNeutral, VContainer,
+  VSort, VNeutral, VPartial, VCons, VIndType,
+  Elimination, EApp, EInd,
   EmptyEnv, EnvEntry, LazyEnvMap, ann_name, ann_val, infer_sort, term_eval,
 )
 
@@ -30,8 +31,22 @@ class InductiveInfo:
 
 # Functions to create values for constructors and induction:
 
-def get_ind_reduce(info:InductiveInfo, level:int) -> VContainer:
-  """ Returns VContainer with correct fn to perform induction """
+def get_indty(info:InductiveInfo) -> VPartial:
+  arity = info.nparams + info.nindices
+  def indty(rec, args:tuple[Binding, ...]) -> Value:
+    assert len(args) == arity
+    return VIndType(info.ref, args)
+  return VPartial(info.ref, arity, indty)
+
+def get_constructor(nparams:int, tag:int, cons_info:ConstructorInfo) -> VPartial:
+  arity = nparams + cons_info.nfields
+  def constructor(rec, args:tuple[Binding, ...]) -> Value:
+    assert len(args) == arity
+    return VCons(cons_info.ref, tag, args)
+  return VPartial(cons_info.ref, arity, constructor)
+
+def get_ind_reduce(info:InductiveInfo, level:int) -> VPartial:
+  """ Returns VPartial with correct fn to perform induction """
   i_motive = info.nparams # arglist offset for motive
   i_branches = i_motive + 1 # arglist offset for branches
   i_indices = i_branches + len(info.constructors) # arglist offset for indices of scrutinee
@@ -39,32 +54,51 @@ def get_ind_reduce(info:InductiveInfo, level:int) -> VContainer:
   arity = i_scrutinee + 1
   # use get_rec to obtain recursive call (indices and scrutinee removed)
   ind_selfref = TConst(info.ref.module, info.ref.path + (f"ind{level}",))
-  def get_rec(fn, args:tuple[Binding]) -> VContainer:
-    return VContainer(ind_selfref, arity, fn, args[:i_indices])
-  def induct(rec, args:tuple[Binding, ...]) -> Value|None:
+  def get_rec(fn, args:tuple[Binding]) -> VPartial:
+    return VPartial(ind_selfref, arity, fn, args[:i_indices])
+  def induct(rec, args:tuple[Binding, ...]) -> Value:
     assert len(args) == arity
     scrutinee = args[i_scrutinee].force()
     match scrutinee:
-      case VNeutral(_, _):
-        return None # evaluation blocked
-      case VContainer(head_ref, nargs, fn, params_fields):
-        for tag, cons_info in enumerate(info.constructors):
-          if head_ref._get_def_id() == cons_info.ref._get_def_id():
-            val_rec = get_rec(rec, args)
-            branch = args[i_branches + tag]
-            env = EnvEntry(EnvEntry(EmptyEnv(), val_rec), branch)
-            for binding in params_fields:
-              env = EnvEntry(env, binding)
-            result = term_eval(cons_info.rule, env)
-            return result
-        return None # evaluation blocked
+      case VNeutral(depth, elims):
+        ind_elim = EInd(ind_selfref, args[:i_scrutinee])
+        return VNeutral(depth, elims + (ind_elim,))
+      case VCons(cons_ref, tag, params_fields):
+        val_rec = get_rec(rec, args)
+        branch = args[i_branches + tag]
+        env = EnvEntry(EnvEntry(EmptyEnv(), val_rec), branch)
+        for binding in params_fields:
+          env = EnvEntry(env, binding)
+        return term_eval(info.constructors[tag].rule, env)
       case _:
         raise EvalError(f"Induction requires a constructor or blocked computation.")
-  return VContainer(ind_selfref, arity, induct)
+  return VPartial(ind_selfref, arity, induct)
 
-def blocked_noforce(rec, args:tuple[Binding, ...]) -> Value|None:
-  """ For VContainer's that should always be considered blocked """
-  return None
+
+# Module subclass specialized to induction
+
+@dataclass
+class InductiveModule(Module):
+  ind_info: InductiveInfo
+  # The sole free variable is the motive's universe, supplied on demand.
+  ind_type: Term
+  cache: dict[int, tuple[Binding, Value]] = field(default_factory=dict)
+  def __getitem__(self, path:tuple[str, ...]) -> tuple[Binding, Value]:
+    if len(path) != 1 or not path[0].startswith("ind"):
+      raise LookupError("Expected ind<n> with n a non-negative integer.")
+    digits = path[0][3:]
+    if not digits.isascii() or not digits.isdigit():
+      raise LookupError("Expected ind<n> with n a non-negative integer.")
+    level = int(digits)
+    if level not in self.cache:
+      ctx = EnvEntry(EmptyEnv(), (VSort(level), VSort(level + 1), "@sort"))
+      infer_sort(self.ind_type, ctx)
+      ty = term_eval(self.ind_type, LazyEnvMap(ctx, ann_val))
+      ind_reduce = get_ind_reduce(self.ind_info, level)
+      self.cache[level] = (ind_reduce, ty)
+    return self.cache[level]
+  def add(self, name, entry):
+    raise RuntimeError("Inductive module cannot accept new definitions!")
 
 
 # new IR node types:
@@ -145,30 +179,6 @@ def selfref_sub(node:IrNode|None, selfref_ir:IrNode, allow_selfref:bool=True) ->
 
 
 # ...
-
-@dataclass
-class InductiveModule(Module):
-  ind_info: InductiveInfo
-  # The sole free variable is the motive's universe, supplied on demand.
-  ind_type: Term
-  cache: dict[int, tuple[Binding, Value]] = field(default_factory=dict)
-  def __getitem__(self, path:tuple[str, ...]) -> tuple[Binding, Value]:
-    if len(path) != 1 or not path[0].startswith("ind"):
-      raise LookupError("Expected ind<n> with n a non-negative integer.")
-    digits = path[0][3:]
-    if not digits.isascii() or not digits.isdigit():
-      raise LookupError("Expected ind<n> with n a non-negative integer.")
-    level = int(digits)
-    if level not in self.cache:
-      ctx = EnvEntry(EmptyEnv(), (VSort(level), VSort(level + 1), "@sort"))
-      infer_sort(self.ind_type, ctx)
-      ty = term_eval(self.ind_type, LazyEnvMap(ctx, ann_val))
-      ind_reduce = get_ind_reduce(self.ind_info, level)
-      self.cache[level] = (ind_reduce, ty)
-    return self.cache[level]
-  def add(self, name, entry):
-    raise RuntimeError("Inductive module cannot accept new definitions!")
-
 
 def env_map(env:Env, fn) -> Env:
   match env:
@@ -284,7 +294,7 @@ def define_inductive(module:Module, declaration:IrInductiveDefinition) -> Induct
   # initialize the InductiveInfo (with constructors to be populated later)
   info = InductiveInfo(TConst(module, (name,)), len(params), len(indices), ())
   module.add(name, (
-    VContainer(info.ref, len(params) + len(indices), blocked_noforce),
+    get_indty(info),
     family_ty
   ))
   
@@ -348,7 +358,7 @@ def define_inductive(module:Module, declaration:IrInductiveDefinition) -> Induct
     ))
     # add this constructor to the module
     module.add(constructor.name, (
-      VContainer(constructor_info.ref, info.nparams + constructor_info.nfields, blocked_noforce),
+      get_constructor(info.nparams, tag, constructor_info),
       term_eval(cons_ty, EmptyEnv())
     ))
   

@@ -53,6 +53,11 @@ class IrNat(IrNode):
     return TNat()
 
 @dataclass(frozen=True)
+class IrSucc(IrNode):
+  def to_term(self, module:Module, binders:Env) -> Term:
+    return TSucc()
+
+@dataclass(frozen=True)
 class IrPi(IrNode):
   param: Binder
   A: IrNode
