@@ -3,7 +3,7 @@ from typing import List, Tuple
 
 from .core import Env, EmptyEnv, EnvEntry
 from .ir import (
-  IrNode, IrSort, IrConst, IrNatLit, IrNat, IrSucc, IrVar, IrPi, IrLam, IrLet, IrApp,
+  IrNode, IrSort, IrConst, IrNatLit, IrNat, IrVar, IrPi, IrLam, IrLet, IrApp,
   IrConstantDefinition, Binder )
 from .inductive import IrInductiveSelfRef, IrConstructorDefinition, IrInductiveDefinition
 
@@ -11,7 +11,6 @@ from .inductive import IrInductiveSelfRef, IrConstructorDefinition, IrInductiveD
 # Tokeniser:
 _nat_lit_re = r"[0-9]+"
 _nat_re = r"ℕ"
-_succ_re = r"σ"
 _first_symb_re = r"[A-Za-z_\|\&\+\*−≡¬⊥⊤<>]"
 _rest_symb_re = r"(" + _first_symb_re + r"|[0-9])"
 _name_re = _first_symb_re + _rest_symb_re + r"*"
@@ -24,7 +23,6 @@ _token_re = re.compile(
       [\[\]()\{\},:=λΠι]|             # punctuation (parens, lambdas, etc.)
       """ + _ident_re + """|          # identifiers
       """ + _nat_re + """ |           # natural number datatype
-      """ + _succ_re + """ |          # successor function
       """ + _nat_lit_re + """         # natural number literals
   )
   \s*                                 # skip trailing whitespace
@@ -268,13 +266,10 @@ class Parser:
       if level is not None:
         self._eat()
         return IrSort(level)
-    # Nat literals & Successors & Nat datatype
+    # Nat literals & Nat datatype
     if re.match(_nat_lit_re, tok):
       self._eat()
       return IrNatLit(int(tok))
-    if re.match(_succ_re, tok):
-      self._eat()
-      return IrSucc()
     if re.match(_nat_re, tok):
       self._eat()
       return IrNat()

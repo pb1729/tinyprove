@@ -16,6 +16,9 @@ from .inductive import (
 from .defs import (
   def_module, get_usual_axioms,
 )
+from .nat_fns import (
+  NAT_MODULE
+)
 
 
 try:

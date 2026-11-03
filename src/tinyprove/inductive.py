@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 
-from .ir import Binder, IrNode, IrSort, IrConst, IrVar, IrLam, IrPi, IrApp, IrLet
+from .ir import Binder, IrNode, IrSort, IrConst, IrVar, IrNatLit, IrNat, IrLam, IrPi, IrApp, IrLet
 from .core import (
   Binding, Value, Term, Module, Env,
   LookupError, TypecheckError, DefinitionError, EvalError,
@@ -202,7 +202,7 @@ class GetIHResult:
   copy: IrNode|None
   ih: tuple[List[tuple[Binder, IrNode]], IrNode, tuple[IrNode, ...]]|None
 
-def get_ih(arg_ty:IrNode, original_arg:IrNode, domain_depth:int=0) -> GetIHResult:
+def get_ih(arg_ty:IrNode, original_arg:IrNode, const_check, domain_depth:int=0) -> GetIHResult:
   """ This function recursively walks the entire arg_ty syntax tree.
       We raise a definition error if we encounter something disallowed.
       domain_depth allows us to perform positivity checking, & distinguish strict positivity. """
@@ -214,18 +214,23 @@ def get_ih(arg_ty:IrNode, original_arg:IrNode, domain_depth:int=0) -> GetIHResul
     case IrSort(level):
       return GetIHResult(IrSort(level), None)
     case IrConst(path):
+      const_check(path)
       return GetIHResult(IrConst(path), None)
     case IrVar(binder):
       return GetIHResult(IrVar(binder), None)
+    case IrNatLit(val):
+      return GetIHResult(IrNatLit(val), None)
+    case IrNat():
+      return GetIHResult(IrNat(), None)
     case IrApp(fn, arg):
-      fn_res = get_ih(fn, original_arg, domain_depth=domain_depth)
-      arg_res = get_ih(arg, original_arg, domain_depth=domain_depth)
+      fn_res = get_ih(fn, original_arg, const_check, domain_depth=domain_depth)
+      arg_res = get_ih(arg, original_arg, const_check, domain_depth=domain_depth)
       if fn_res.copy is None or arg_res.copy is None:
         raise DefinitionError("Self-references can't appear in function applications.")
       return GetIHResult(IrApp(fn_res.copy, arg_res.copy), None)
     case IrPi(param, A, B):
-      A_res = get_ih(A, original_arg, domain_depth=domain_depth + 1)
-      B_res = get_ih(B, IrApp(original_arg, IrVar(param)), domain_depth=domain_depth)
+      A_res = get_ih(A, original_arg, const_check, domain_depth=domain_depth + 1)
+      B_res = get_ih(B, IrApp(original_arg, IrVar(param)), const_check, domain_depth=domain_depth)
       if A_res.copy is None or B_res.copy is None:
         copy = None
       else:
@@ -251,7 +256,9 @@ def get_ih(arg_ty:IrNode, original_arg:IrNode, domain_depth:int=0) -> GetIHResul
 
 
 def define_inductive(module:Module, declaration:IrInductiveDefinition) -> InductiveInfo:
-  """ Check and install an inductive. Roll back all entries if checking fails.
+  """ Check and install an inductive.
+  
+  Warning: Failure leaves `module` in an undefined state.
 
   Parameters are uniform. Recursive fields must be written as I[indices];
   function-valued, nested, and mutual recursion are not supported yet.
@@ -297,6 +304,9 @@ def define_inductive(module:Module, declaration:IrInductiveDefinition) -> Induct
     get_indty(info),
     family_ty
   ))
+  def const_check(path): # ensure no illegal const references in definitions
+    if TConst(module, path)._get_def_id() == TConst(module, (name,))._get_def_id():
+      raise DefinitionError(f"IrConst({path}) is an illegal self-reference. Use IrSelfRef instead.")
   
   # Give ourselves selfref access now that the family has been added to the module
   param_refs = [IrVar(binder) for binder, _ in params]
@@ -335,7 +345,7 @@ def define_inductive(module:Module, declaration:IrInductiveDefinition) -> Induct
       rule = IrApp(rule, arg_var)
       # update case args
       case_args.append((binder, type_ir))
-      ih_result = get_ih(type_ir, arg_var)
+      ih_result = get_ih(type_ir, arg_var, const_check)
       if ih_result.ih is not None:
         args, scrut, ih_indices = ih_result.ih
         # update rule with recursion

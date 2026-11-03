@@ -80,11 +80,6 @@ class TNat(Term):
     return "ℕ"
 
 @dataclass(frozen=True)
-class TSucc(Term):
-  def str(self, ctx:Env):
-    return "σ"
-
-@dataclass(frozen=True)
 class TApp(Term):
   head: Term
   arg: Term
@@ -372,6 +367,8 @@ class VPartial(Value):
 
 # ...
 
+PLUS_REF = None # this will be MUTATED to contain the correct reference
+
 def add_to(a:int, n:Binding) -> Value:
   n = n.force()
   match n:
@@ -382,30 +379,43 @@ def add_to(a:int, n:Binding) -> Value:
     case _:
       raise EvalError(f"Can't add to value {n}")
 
-def get_partial_for_succ() -> VPartial:
-  def succ(rec, args:tuple[Binding, ...]) -> Value:
-    n, = args
-    return add_to(1, n)
-  return VPartial(TSucc(), 1, succ)
+def delay_app(fn: Binding, arg: Binding) -> Thunk:
+  # Environment indices: arg=0, fn=1.
+  env = EnvEntry(EnvEntry(EmptyEnv(), fn), arg)
+  return Thunk(TApp(TVar(1), TVar(0)), env)
 
 def get_partial_for_nat(val:int, P:Binding) -> VPartial:
   """ makes a given VNatLit as a VPartial, with first P arg already applied.
       this is a hack so we can make Nat literals callable. """
-  def iterate(rec, args:tuple[Binding, ...]) -> Value:
+  def nat_ind(rec, args:tuple[Binding, ...]) -> Value:
     P, f, b = args
     if val == 0:
       return b.force()
-    f = f.force()
-    for i in range(val):
-      b = vapp(f, b)
-    return b
-  return VPartial(TNatLit(val), 3, iterate, (P,))
+    else:
+      f = f.force()
+      pred = VNatLit(val - 1)
+      prev = delay_app(delay_app(delay_app(pred, P), f), b)
+      return vapp(vapp(f, pred), prev)
+  return VPartial(TNatLit(val), 3, nat_ind, (P,))
 
 def vapp(fn:Value, arg:Binding) -> Value:
   match fn:
     case VLam(body):
       return body.apply(arg)
     case VNeutral(head_level, args):
+      if len(args) > 0 and isinstance(args[-1], EAdd):
+        predecessor = VNeutral(head_level, args[:-1]).add(args[-1].a - 1)
+        # Capture pred; under P, f, b:
+        pred, P, f, b = TVar(3), TVar(2), TVar(1), TVar(0)
+        induction = term_eval(
+          TLam("P", None,
+            TLam("f", None,
+              TLam("b", None,
+                TApp(
+                  TApp(f, pred),
+                  TApp(TApp(TApp(pred, P), f), b))))),
+          EnvEntry(EmptyEnv(), predecessor))
+        return vapp(induction, arg)
       return VNeutral(head_level, args + (EApp(arg),))
     case VPartial(_, _, _, _, _):
       return fn.apply(arg)
@@ -426,8 +436,6 @@ def term_eval(term:Term, env:Env) -> Value:
       return VNatLit(val)
     case TNat():
       return VNat()
-    case TSucc():
-      return get_partial_for_succ()
     case TApp(head, arg):
       head_val = term_eval(head, env)
       arg_bind = Thunk(arg, env)
@@ -459,7 +467,8 @@ def quote_elims(head:Term, elims:tuple[Elimination, ...], depth:int) -> Term:
           icall = TApp(icall, quote(arg, depth))
         head = TApp(icall, head) # for inductive elimination, the head is the scrutinee
       case EAdd(a):
-        head = TApp(TApp(TApp(TNatLit(a), TNat()), TSucc()), head)
+        assert PLUS_REF is not None
+        head = TApp(TApp(PLUS_REF, TNatLit(a)), head)
       case _:
         raise EvalError(f"Unrecognized elimination {elim}")
   return head
@@ -617,8 +626,6 @@ def infer(term:Term, ctx:Env) -> Value:
       return VNat()
     case TNat():
       return VSort(0)
-    case TSucc():
-      return VPi(VNat(), Closure(TNat(), EmptyEnv()))
     case TPi(param, A, B):
       level_A = infer_sort(A, ctx)
       domain = term_eval(A, LazyEnvMap(ctx, ann_val))
@@ -638,14 +645,45 @@ def infer(term:Term, ctx:Env) -> Value:
         case VPi(A, B): # usual case: fn is a function
           check(arg, A.force(), ctx)
           return B.apply(Thunk(arg, LazyEnvMap(ctx, ann_val)))
-        case VNat(): # typing logic to make Nat's callable
+        case VNat(): # n P: dependent natural-number induction
+          motive_ty = infer(
+              TLam(arg.param, TNat(), arg.body) # provide ℕ as arg type if implicit
+              if isinstance(arg, TLam) and arg.A is None
+              else arg,
+            ctx).force()
+          if not isinstance(motive_ty, VPi) or not conv(motive_ty.A, VNat(), depth):
+            raise TypecheckError("Nat induction expects a motive of type ℕ → Type_u.")
+
+          k = VNeutral(depth, ())
+          if not isinstance(motive_ty.B.apply(k).force(), VSort):
+            raise TypecheckError("The Nat induction motive must return a type.")
+
+          if PLUS_REF is None:
+            raise EvalError("Initialize the Nat module before using Nat induction.")
+
           env = LazyEnvMap(ctx, ann_val)
-          infer_sort(arg, ctx)
-          P = term_eval(arg, env)
-          # make (P => P) => P => P
-          P_wrap_1 = Closure(quote(P, depth + 1), env)
-          P_wrap_2 = Closure(quote(VPi(P, P_wrap_1), depth + 1), env) # TODO: repeat twice? yuck.
-          return VPi(VPi(P, P_wrap_1), P_wrap_2)
+
+          # Capture n and P in a small environment: P=0, n=1.
+          ind_env = EnvEntry(
+            EnvEntry(EmptyEnv(), Thunk(fn, env)),
+            Thunk(arg, env))
+
+          # Step type: Π k: ℕ => Π ih: P k => P (+ 1 k).
+          # Under k: k=0, P=1, n=2.
+          # Under ih: ih=0, k=1, P=2, n=3.
+          succ_k = TApp(TApp(PLUS_REF, TNatLit(1)), TVar(1))
+          step_ty = TPi("k", TNat(),
+            TPi("ih", TApp(TVar(1), TVar(0)),
+              TApp(TVar(2), succ_k)))
+
+          # Remaining arguments and result: step_ty → P 0 → P n.
+          # Under f: f=0, P=1, n=2.
+          # Under b: b=0, f=1, P=2, n=3.
+          result_ty = TPi("f", step_ty,
+            TPi("b", TApp(TVar(1), TNatLit(0)),
+              TApp(TVar(2), TVar(3))))
+
+          return term_eval(result_ty, ind_env)
         case _:
           raise TypecheckError(f"Expected a function, got {debug_str(fn, ctx)}.")
     case TLet(_, _, _, _):
