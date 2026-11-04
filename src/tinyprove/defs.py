@@ -4,6 +4,7 @@ from .parser import parse
 from .core import Module, TConst, Binding, Axiom, Value, EvalError, EmptyEnv, term_eval
 from .ir import Binder, IrSort, IrConst, IrVar, IrPi, IrApp
 from .inductive import InductiveModule
+from .nat_fns import NAT_MODULE
 
 
 USUAL_AXIOMS_SRC = """
@@ -92,7 +93,7 @@ def get_lem(module: Module) -> Value:
   
 
 def get_usual_axioms(classical:bool=False) -> Module:
-  ans = def_module(USUAL_AXIOMS_SRC)
+  ans = def_module(USUAL_AXIOMS_SRC, imports=[("", NAT_MODULE)])
   if classical:
     force_axiom("LEM", get_lem(ans), ans)
   return ans
