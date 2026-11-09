@@ -211,10 +211,10 @@ class Module:
       self.entries[name] = entry
 
 # a def in a Module is a (value, type) pair
-def def_val(defn:tuple[Value, Value]) -> Value:
+def def_val(defn:tuple[Binding, Value]) -> Binding:
   val, ty = defn
   return val
-def def_ty(defn:tuple[Value, Value]) -> Value:
+def def_ty(defn:tuple[Binding, Value]) -> Value:
   val, ty = defn
   return ty
 

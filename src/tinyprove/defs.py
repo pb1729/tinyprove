@@ -1,7 +1,7 @@
 from typing import List, Tuple
 
 from .parser import parse
-from .core import Module, TConst, Binding, Axiom, Value, EvalError, EmptyEnv, term_eval
+from .core import Module, TConst, Binding, Axiom, Value, EvalError, EmptyEnv, term_eval, def_val, def_ty
 from .ir import Binder, IrSort, IrConst, IrVar, IrPi, IrApp
 from .inductive import InductiveModule
 from .nat_fns import NAT_MODULE
@@ -37,14 +37,8 @@ USUAL_AXIOMS_SRC = """
 },
 
 # existential quantification
-ι Exists (A: Type0, P: (Π a: A => Type0)) [] : Type0 {
-  exists (a: A, pa: (P a)) => Exists[]
-},
-
-# natural numbers
-ι Nat () [] : Type0 {
-  Z () => Nat[],
-  S (n: Nat[]) => Nat[]
+ι ∃ (A: Type0, P: (Π a: A => Type0)) [] : Type0 {
+  ∃in (a: A, pa: (P a)) => ∃[]
 },
 
 """
@@ -99,6 +93,16 @@ def get_usual_axioms(classical:bool=False) -> Module:
   return ans
 
 
+def get_value_for_const(module:Module, path:str|tuple[str, ...]) -> Value:
+  """ for the constant located at `path` in `module`, return the value stored for it
+      warning: may trigger normalization of a Binding, at potentially large resource-cost """
+  if isinstance(path, str): path = tuple(path.split("."))
+  ans = def_val(module[path])
+  return ans.force()
 
+def get_type_for_const(module:Module, path:str|tuple[str, ...]) -> Value:
+  """ for the constant located at `path` in `module`, return the type stored for it """
+  if isinstance(path, str): path = tuple(path.split("."))
+  return def_ty(module[path])
 
 

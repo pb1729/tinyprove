@@ -1,8 +1,9 @@
 from .core import (
-  TypecheckError, DefinitionError,
-  Term, TSort, TConst, TVar, TPi, TLam, TApp, TLet,
-  Module,
-  infer, check,
+  LookupError, EvalError, TypecheckError, DefinitionError,
+  Term, TSort, TConst, TVar, TPi, TLam, TApp, TLet, TNatLit, TNat,
+  Env, EmptyEnv, EnvEntry,
+  Module, Value,
+  infer, check, quote,
 )
 from .ir import (
   IrNode, IrSort, IrConst, IrVar, IrPi, IrLam, IrApp, IrLet, IrConstantDefinition
@@ -14,7 +15,7 @@ from .inductive import (
   IrInductiveDefinition, IrConstructorDefinition, IrInductiveSelfRef,
 )
 from .defs import (
-  def_module, get_usual_axioms,
+  def_module, get_usual_axioms, get_value_for_const, get_type_for_const,
 )
 from .nat_fns import (
   NAT_MODULE
@@ -26,5 +27,9 @@ try:
     __version__ = version("tinyprove")
 except Exception:
     __version__ = "0.0.0"
+
+
+# "Wir müssen wissen – wir werden wissen"
+
 
 

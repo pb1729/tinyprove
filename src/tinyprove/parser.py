@@ -11,7 +11,7 @@ from .inductive import IrInductiveSelfRef, IrConstructorDefinition, IrInductiveD
 # Tokeniser:
 _nat_lit_re = r"[0-9]+"
 _nat_re = r"ℕ"
-_first_symb_re = r"[A-Za-z_\|\&\+\*−≡¬⊥⊤<>]"
+_first_symb_re = r"[A-Za-z_\|\&\+\*−≡¬⊥⊤<>∃]"
 _rest_symb_re = r"(" + _first_symb_re + r"|[0-9])"
 _name_re = _first_symb_re + _rest_symb_re + r"*"
 _ident_re = r"(" + _name_re + f"\.)*" + _name_re
