@@ -75,7 +75,7 @@ def find_ref(binders:Env, name:str) -> IrNode:
 
 # Recursive‑descent parser:
 class Parser:
-  def __init__(self, tokens: List[str], ctx=None):
+  def __init__(self, tokens: List[str]):
     self.toks: List[str] = tokens
     self.pos: int = 0
     self.indty_name = None
@@ -288,10 +288,10 @@ class Parser:
 
 # Parsing functions:
 
-def parse(src: str, ctx=None) -> List[IrNode]:
+def parse(src: str) -> List[IrNode]:
   src = strip_comments(src)
   tokens = _tokenise(src)
-  return Parser(tokens, ctx=ctx).parse()
+  return Parser(tokens).parse()
 
 
 

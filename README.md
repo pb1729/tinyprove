@@ -189,7 +189,7 @@ In a similar way, while the type of a function will be a function type, the type
 
 ### Basic definitions from `get_usual_axioms`
 
-Calling `get_usual_axioms()` produces a module containing some definitions that are expected to be widely useful. Most of them are not axioms in the true sense: They are ordinary tinyprove definitions that happen to be likely to be very handy:
+Calling `get_usual_axioms()` produces a module containing some definitions that are expected to be widely useful. Most of them are not axioms in the true sense: They are ordinary tinyprove definitions:
 
 ```
 # false
@@ -293,7 +293,7 @@ contrapos: Π A: Type0 => Π B: Type0 => Π _: (Π _: A => B) => (Π _: ¬ B => 
 
 First we obtain `(a_to_b a): B` from `a: A`. Then we obtain a contradiction by feeding it to `nb`. This completes our first theorem. Checking it in python:
 
-```
+```python3
 base = get_usual_axioms()
 
 my_module = def_module("""
@@ -306,7 +306,7 @@ contrapos: Π A: Type0 => Π B: Type0 => Π _: (Π _: A => B) => (Π _: ¬ B => 
 
 ### Inductive Types
 
-One thing we need to be able to do most of modern mathematics is to define inductive types. `⊥`, `⊤`, `&`, `|`, `∃`, and even `≡` are all in fact defined as inductive types! You define an inductive type by defining its paramters, indices, and constructors. The `⊤` type does not have any parameters or indices, and only has one constructor, so it makes a nice starting example.
+One thing we need before we can do most of modern mathematics is the ability to define inductive types. `⊥`, `⊤`, `&`, `|`, `∃`, and even `≡` are all in fact defined as inductive types! You define an inductive type by defining its paramters, indices, and constructors. The `⊤` type does not have any parameters or indices, and only has one constructor, so it makes a nice starting example.
 
 ```
 ι ⊤ () [] : Type0 {
@@ -345,7 +345,7 @@ xor: Π x: Bit => Π y: Bit => Bit
 
 The new thing used here is `Bit.ind0`, the inductive principle for the `Bit` datatype. Here are the arguments that an inductive principal takes, in order:
 * The **parameters** of the inductive type.
-* The **motive**. For an inductive datatype `T` with indices `i_1...i_k` of types `I_1...I_k`, the motive is a function that accepts arguments `(i_1: I_1, ... i_k: I_k, instance: T)` and returns a type. If we use `T.ind0`, that type must be of type `Type0`, if we use `T.ind1`, that type must be of type `Type1`, etc. When the motive is applied to the scrutinee (see later in the list) and its indices, the result is the type returned by the entire inductive principle call.
+* The **motive**. For an inductive datatype `T` with indices `i_1...i_k` of types `I_1...I_k`, the motive is a function that accepts arguments `(i_1: I_1, ... i_k: I_k, instance: T i_1 ... i_k)` and returns a type. If we use `T.ind0`, that type must be of type `Type0`, if we use `T.ind1`, that type must be of type `Type1`, etc. When the motive is applied to the scrutinee (see later in the list) and its indices, the result is the type returned by the entire inductive principle call.
 * The **cases**. There is one of these for every constructor. These are values (if the corresponding constructor has no fields) or functions (if the corresponding constructor has fields). When fully applied, the type of the case for the constructor `cons` must match the type returned by the motive when passed `instance: T = (cons ...)`.
   * Self-reference: The thing that makes inductive principles incredibly powerful is that inductive types can reference themselves (i.e. a `BinaryTree` type has a `branch` constructor with left and right subtrees as fields, where each subtree is a `BinaryTree` itself). For fields that reference the original type, the inductive principle becomes recursive. We can obtain a result for that field that we are then able to use in our case function. This is how induction on the natural numbers, or any inductively defined type such as a tree type or a list type, works.
 * The **indices** of the **scrutinee**. Because things have types, we need to specify the indices so that the next argument has a known expected type.
@@ -462,7 +462,7 @@ The `Vector` type is parametrized by `A`. It's not parametrized by `n`, though. 
 
 The problem with making `n` a type parameter is the following: To make, say, a `Vector A 3` given `a: A`, we need to use `v_cons` to append `a` onto a `Vector A 2`. But if `n` was a parameter, then `Vector A 2` would be impossible to make into a field. Self-references are assumed by the machinery for `ι` definitions to share the same parameters. So we could only accept other `Vector A 3` instances, which is hardly useful. However, there's no requirement that self-references must share the same indices. Indeed, you may have noticed that self references were distinguished because they required us to put `[]` after the inductive type name. These brackets hold the indices of that type, though up until now they were empty because our types did not have any indices. By making `n` an index, we allow ourselves to use a `Vector A 2` to build a `Vector A 3`, even though the value of `n` varies between the two.
 
-Indices must be computable from the constructor arguments in some way. For example, `v_empty` doesn't have constructor arguments, but the index produced is always just the constant `0`, so that's fine. `v_cons` does have arguments, and the produced index `+ 1 len` can be easily computed from them. We also see that the index for the self-reference `rest` is computable from the previous constructor parameters (in particular, it's the identity function applied to `len`).
+Indices must be computable from the constructor arguments in some way. For example, `v_empty` doesn't have constructor arguments, but the index produced is always just the constant `0`, so that's fine. `v_cons` does have arguments, and the produced index `+ 1 len` can be easily computed from them. We also see that the index for the self-reference `rest` is computable from the previous constructor parameters (it just takes `len`).
 
 ```
 vec_map: Π A: Type0 => Π B: Type0 => Π f: (Π _: A => B) => Π len: ℕ => Π v_a: Vector A len => Vector B len
