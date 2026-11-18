@@ -3,6 +3,7 @@ from typing import List, Tuple
 
 from .core import Env, EmptyEnv, EnvEntry
 from .ir import (
+  LineInfo,
   IrNode, IrSort, IrConst, IrNatLit, IrNat, IrVar, IrPi, IrLam, IrLet, IrApp,
   IrConstantDefinition, Binder )
 from .inductive import IrInductiveSelfRef, IrConstructorDefinition, IrInductiveDefinition
@@ -15,12 +16,12 @@ _first_symb_re = r"[A-Za-z_\|\&\+\*−≡¬⊥⊤<>∃]"
 _rest_symb_re = r"(" + _first_symb_re + r"|[0-9])"
 _name_re = _first_symb_re + _rest_symb_re + r"*"
 _ident_re = r"(" + _name_re + f"\.)*" + _name_re
+_whitespace_re = re.compile("\s*")
 _token_re = re.compile(
   r"""
-  \s*                                 # skip leading whitespace
   (                                   # group captures only non-whitespace
       =>|->|                          # separators
-      [\[\]()\{\},:=λΠι]|             # punctuation (parens, lambdas, etc.)
+      [\[\]\(\)\{\},:=λΠι]|           # punctuation (parens, lambdas, etc.)
       """ + _ident_re + """|          # identifiers
       """ + _nat_re + """ |           # natural number datatype
       """ + _nat_lit_re + """         # natural number literals
@@ -30,29 +31,32 @@ _token_re = re.compile(
   re.VERBOSE,
 )
 
+
+
 def split_path(ident:str) -> Tuple[str]:
   return tuple(ident.split("."))
 
-def _tokenise(src: str) -> List[str]:
+
+def _tokenise(src: str, initial_line_num:int=1) -> List[str]:
   """ Return a list of string tokens (whitespace already stripped). """
-  pos = 0
+  lines = src.split("\n")
   ans = []
-  while pos < len(src):
-    m = _token_re.match(src, pos)
-    if not m:
-      raise SyntaxError(f"Unexpected character at position {pos}: {repr(src[pos])}")
-    ans.append(m.group(1))
-    pos = m.end()
-  return ans
-
-
-def strip_comments(src:str) -> str:
-  src = src.split("\n")
-  src = [
-    (line + "\n")[:line.find("#")]
-    for line in src
-  ]
-  return "\n".join(src)
+  line_nums = []
+  tok_start_offsets = []
+  for line_num, line in enumerate(lines, start=initial_line_num):
+    comment_start = line.find("#")
+    if comment_start >= 0:
+      line = line[:comment_start]
+    pos = _whitespace_re.match(line, 0).end() # jump past initial whitespace
+    while pos < len(line):
+      m = _token_re.match(line, pos)
+      if not m:
+        raise SyntaxError(f"Unexpected character on line {line_num}: {repr(line[pos])}")
+      ans.append(m.group(1))
+      line_nums.append(line_num)
+      tok_start_offsets.append(pos)
+      pos = m.end()
+  return ans, LineInfo(initial_line_num, lines, line_nums, tok_start_offsets)
 
 
 def to_positive_int(digits:str) -> int | None:
@@ -75,19 +79,23 @@ def find_ref(binders:Env, name:str) -> IrNode:
 
 # Recursive‑descent parser:
 class Parser:
-  def __init__(self, tokens: List[str]):
+  def __init__(self, tokens: List[str], line_info:LineInfo):
     self.toks: List[str] = tokens
+    self.line_info = line_info
     self.pos: int = 0
     self.indty_name = None
     self.env:Env = EmptyEnv() # maintain environment of what is in our lexical scope
+  def _err(self, msg:str, tok_offset:int=0):
+    pos = max(0, self.pos - tok_offset) # some errors should point to previous token
+    raise SyntaxError(msg + self.line_info.get_locator_string_for_line(pos))
   def _peek(self) -> str | None:
     return self.toks[self.pos] if self.pos < len(self.toks) else None
   def _eat(self, expected: str | None = None) -> str:
     tok = self._peek()
     if tok is None:
-      raise SyntaxError("unexpected end‑of‑input")
+      self._err("unexpected end‑of‑input", 1)
     if expected is not None and tok != expected:
-      raise SyntaxError(f"expected '{expected}', got '{tok}'")
+      self._err(f"expected '{expected}', got '{tok}'")
     self.pos += 1
     return tok
   def _push(self, binder:Binder):
@@ -119,19 +127,21 @@ class Parser:
       self._eat(",")
   def _check_name(self, name, category:str):
     if name == self.indty_name:
-      raise SyntaxError(f"Can't shadow inductive type name f{self.indty_name}")
+      self._err(f"Can't shadow inductive type name f{self.indty_name}", 1)
     if not re.match(_name_re, name):
-      raise SyntaxError(f"Expected a valid {category} name instead of {name}")
+      self._err(f"Expected a valid {category} name instead of {name}", 1)
   def parse(self) -> List[IrNode]:
     return self._parse_comma_separated(None, self._parse_defn)
   def _parse_defn(self) -> IrNode:
     tok = self._peek()
     if tok == "ι": # define inductive type
       return self._parse_iota()
+    line_ref = (self.pos, self.line_info) # save for creating the Definition
     # other definition
     binder, A, rhs = self._parse_assignment()
-    return IrConstantDefinition(binder.name, rhs, A) # we just want the name as a string
+    return IrConstantDefinition(binder.name, rhs, A, line_ref) # we just want the name as a string
   def _parse_iota(self) -> IrNode:
+    line_ref = (self.pos, self.line_info) # save for creating the Definition
     self._eat("ι")
     name = self._eat()
     self._check_name(name, "inductive type")
@@ -161,7 +171,7 @@ class Parser:
     return IrInductiveDefinition(
       name, sort,
       params, indices,
-      constructors)
+      constructors, line_ref)
   def _parse_constructor_def(self) -> IrNode:
     name = self._eat()
     self._check_name(name, "constructor")
@@ -253,8 +263,10 @@ class Parser:
   def _parse_atom(self) -> IrNode:
     tok = self._peek()
     if tok is None:
-      raise SyntaxError("unexpected end‑of‑input while parsing atom")
+      self._err("unexpected end‑of‑input while parsing atom")
     # Parenthesised expression
+    if tok == "{": # braces of the let-expr make this unambiguous
+      return self._parse_let()
     if tok == "(":
       self._eat("(")
       expr = self._parse_expr()
@@ -283,15 +295,14 @@ class Parser:
         return IrInductiveSelfRef(index_vals)
       return find_ref(self.env, tok)
     # catchall
-    raise SyntaxError(f"unexpected token '{tok}'")
+    self._err(f"unexpected token '{tok}'")
 
 
 # Parsing functions:
 
 def parse(src: str) -> List[IrNode]:
-  src = strip_comments(src)
-  tokens = _tokenise(src)
-  return Parser(tokens).parse()
+  tokens, line_info = _tokenise(src)
+  return Parser(tokens, line_info).parse()
 
 
 

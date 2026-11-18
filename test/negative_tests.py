@@ -1,5 +1,6 @@
 """Positivity rejection tests for parsed and programmatically constructed IR."""
 
+from contextlib import contextmanager
 from dataclasses import replace
 import unittest
 
@@ -8,6 +9,15 @@ from tinyprove.ir import IrConst
 
 
 class PositivityTests(unittest.TestCase):
+    @contextmanager
+    def assert_definition_cause(self, expected_type, pattern):
+        """Check the immediate failure wrapped by definition source context."""
+        with self.assertRaises(DefinitionError) as caught:
+            yield
+        cause = caught.exception.__cause__
+        self.assertIsInstance(cause, expected_type)
+        self.assertRegex(str(cause), pattern)
+
     def setUp(self):
         # Failed declarations can leave the family and earlier constructors
         # installed, so each test starts with a fresh module.
@@ -17,7 +27,7 @@ class PositivityTests(unittest.TestCase):
 
     def assert_hidden_recursion_rejected(self, source):
         declaration, = parse(source)
-        with self.assertRaisesRegex(
+        with self.assert_definition_cause(
                 DefinitionError, "Self-references can't appear in function applications"):
             declaration.apply(self.module)
 
@@ -55,7 +65,7 @@ class PositivityTests(unittest.TestCase):
                 mk (f: (Π x: Bad[] => ⊥)) => Bad[]
             },
         """)
-        with self.assertRaisesRegex(DefinitionError, "Positivity check failed"):
+        with self.assert_definition_cause(DefinitionError, "Positivity check failed"):
             declaration.apply(self.module)
 
     def test_constant_cannot_disguise_self_reference(self):
@@ -70,7 +80,7 @@ class PositivityTests(unittest.TestCase):
         field = replace(field, A=IrConst(("Bad",)))
         constructor = replace(constructor, args=[(binder, field)])
         declaration = replace(declaration, constructors=[constructor])
-        with self.assertRaisesRegex(DefinitionError, "illegal self-reference"):
+        with self.assert_definition_cause(DefinitionError, "illegal self-reference"):
             declaration.apply(self.module)
 
     def test_cyclic_alias_cannot_disguise_self_reference(self):
@@ -90,7 +100,7 @@ class PositivityTests(unittest.TestCase):
                         mk (f: (Π x: {reference} => ⊥)) => Bad[]
                     }},
                 """)
-                with self.assertRaisesRegex(DefinitionError, "illegal self-reference"):
+                with self.assert_definition_cause(DefinitionError, "illegal self-reference"):
                     declaration.apply(module)
 
 

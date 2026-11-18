@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 
-from .ir import Binder, IrNode, IrSort, IrConst, IrVar, IrNatLit, IrNat, IrLam, IrPi, IrApp, IrLet
+from .ir import LineInfo, Binder, IrNode, IrSort, IrConst, IrVar, IrNatLit, IrNat, IrLam, IrPi, IrApp, IrLet
 from .core import (
   Binding, Value, Term, Module, Env,
   LookupError, TypecheckError, DefinitionError, EvalError,
@@ -120,8 +120,16 @@ class IrInductiveDefinition(IrNode):
   params: list[tuple[Binder, IrNode]]
   indices: list[tuple[Binder, IrNode]]
   constructors: list[IrConstructorDefinition]
+  line_ref: tuple[int, LineInfo]
   def apply(self, module:Module):
-    define_inductive(module, self)
+    try:
+      define_inductive(module, self)
+    except Exception as e:
+      pos, line_info = self.line_ref
+      locator_string = line_info.get_locator_string_for_line(pos)
+      new_err = DefinitionError(f"Failed inductive definition {self.name} starting {locator_string[1:]}\n"
+        "See the exception that caused this one for details.")
+      raise new_err from e
 
 
 # IR manipulation:

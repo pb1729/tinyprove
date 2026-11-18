@@ -100,18 +100,42 @@ class IrApp(IrNode):
       self.arg.to_term(module, binders))
 
 
+# Class for tracking line number data
+class LineInfo:
+  def __init__(self, initial_num:int, lines:list[str], line_nums:list[int], tok_start_offsets:list[str]):
+    self.initial_num = initial_num
+    self.lines = lines
+    self.line_nums = line_nums
+    self.tok_start_offsets = tok_start_offsets
+  def get_locator_string_for_line(self, pos:int) -> str:
+    line_num = self.line_nums[pos]
+    return "\n".join(["",
+      f"on line {line_num}:",
+      self.lines[line_num - self.initial_num],
+      " "*self.tok_start_offsets[pos] + "^"
+    ])
+
+
 # IR node for constant definitions:
 @dataclass(frozen=True)
 class IrConstantDefinition(IrNode):
   name: str
   value: IrNode
   expected_ty: Optional[IrNode]
+  line_ref: tuple[int, LineInfo]
   def apply(self, module:Module):
-    value = self.value.to_term(module, EmptyEnv())
-    expected_ty = (
-      None if self.expected_ty is None else
-      self.expected_ty.to_term(module, EmptyEnv())
-    )
-    define(module, self.name, value, expected_ty)
+    try:
+      value = self.value.to_term(module, EmptyEnv())
+      expected_ty = (
+        None if self.expected_ty is None else
+        self.expected_ty.to_term(module, EmptyEnv())
+      )
+      define(module, self.name, value, expected_ty)
+    except Exception as e:
+      pos, line_info = self.line_ref
+      locator_string = line_info.get_locator_string_for_line(pos)
+      new_err = DefinitionError(f"Failed definition of {self.name} starting {locator_string[1:]}\n"
+        "See the exception that caused this one for details.")
+      raise new_err from e
 
 
