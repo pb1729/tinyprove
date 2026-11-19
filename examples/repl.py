@@ -4,6 +4,7 @@
 # Reading: The parser reads in source code on demand from user input. It will not know that you have finished a definition until you've typed the trailing comma.
 # Printing: For each definition, we print out the values that it caused to be defined (not including submodules). This can sometimes result in the quote function generating large expressions.
 
+import readline
 
 from tinyprove import get_usual_axioms, def_module, get_value_for_const, quote, EmptyEnv
 from tinyprove.ir import LineInfo
