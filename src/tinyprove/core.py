@@ -23,11 +23,6 @@ class Value(Binding):
   def force(self) -> Value:
     return self
 
-class Axiom(Binding):
-  """ A binding with no constructive/computational content. Raises an Error when forced. """
-  def force(self) -> Value:
-    raise EvalError("Can't force an Axiom.")
-
 class Elimination:
   """ An Elimination is something that can be blocked by a free variable. """
   pass
@@ -57,8 +52,9 @@ class TConst(Term):
   def str(self, ctx:Env):
     return f"[Module {id(self.module)}].{'.'.join(self.path)}"
   def _get_def_id(self):
-    """ Use python's id builtin to get this definition's unique id. """
-    return id(self.module[self.path])
+    """ Use python's id builtin to get this definition's unique id.
+        We use the id of the Binding this constant refers to. """
+    return id(def_val(self.module[self.path]))
 
 @dataclass(frozen=True)
 class TVar(Term):
@@ -268,6 +264,14 @@ class Closure:
   def apply(self, arg:Binding) -> Value:
     return term_eval(self.term, EnvEntry(self.env, arg))
 
+@dataclass(frozen=True)
+class Axiom(Binding):
+  """ A binding with no constructive/computational content.
+      Returns a neutral when properly registered. """
+  ref:TConst
+  def force(self) -> Value:
+    return VNeutral(self.ref, ())
+
 
 # Elimination concrete classes:
 
@@ -311,7 +315,7 @@ class VPi(Value):
 @dataclass(frozen=True)
 class VNeutral(Value):
   """ An expression that cannot be reduced due to occurence of a free variable in the head """
-  head_level: int
+  head_level: int|TConst # usually an integer representing a deBruijn level. TConst to represent axioms.
   args: tuple[Elimination, ...]
   def add(self, n:int) -> VNeutral:
     """ Apply σ n times to this VNeutral.
@@ -490,9 +494,13 @@ def quote(val:Binding, depth:int=0) -> Term:
       arg = VNeutral(depth, ())
       return TPi(f"x{depth}", quote(A, depth), quote(B.apply(arg), depth + 1))
     case VNeutral(head_level, elims):
-      assert 0 <= head_level < depth
-      idx = depth - head_level - 1
-      return quote_elims(TVar(idx), elims, depth)
+      if isinstance(head_level, int): # head is a variable
+        assert 0 <= head_level < depth
+        idx = depth - head_level - 1
+        head = TVar(idx)
+      elif isinstance(head_level, TConst): # head is an axiom
+        head = head_level
+      return quote_elims(head, elims, depth)
     case VCons(cons_ref, tag, params_fields):
       return quote_apps(cons_ref, params_fields, depth)
     case VIndType(ref, params_indices):
@@ -514,6 +522,12 @@ def is_fn(fn: Value) -> bool|None:
       return None
   return False
 
+def conv_heads(head1:int|TConst, head2:int|TConst) -> bool:
+  if isinstance(head1, int) and isinstance(head2, int):
+    return head1 == head2
+  if isinstance(head1, TConst) and isinstance(head2, TConst):
+    return head1._get_def_id() == head2._get_def_id()
+  return False
 
 def conv(a:Binding, b:Binding, depth:int=0, accept_assignable:bool=False) -> bool:
   """ Check structural equality for two values. The check is exact and symmetric by
@@ -533,8 +547,8 @@ def conv(a:Binding, b:Binding, depth:int=0, accept_assignable:bool=False) -> boo
       return n == m
     case VNat(), VNat():
       return True
-    case VNeutral(i, xs), VNeutral(j, ys):
-      return i == j and conv_elims(xs, ys, depth)
+    case VNeutral(head1, xs), VNeutral(head2, ys):
+      return conv_heads(head1, head2) and conv_elims(xs, ys, depth)
     case VPi(A, B), VPi(C, D):
       x = VNeutral(depth, ())
       return ( # NOTE: we preserve the accept_assignable flag for Pi types

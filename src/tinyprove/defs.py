@@ -74,7 +74,7 @@ def def_module(src:str, imports:List[Tuple[str, Module]]|None=None) -> Module:
 def force_axiom(name:str, ty:Value, module:Module):
   """ MUTATES module
       WARNING: Overrides type checking and can break soundness! """
-  binding = Axiom()
+  binding = Axiom(TConst(module, (name,)))
   module.add(name, (binding, ty))
 
 def get_lem(module: Module) -> Value:

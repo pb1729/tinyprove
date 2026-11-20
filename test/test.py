@@ -3,7 +3,8 @@
 import unittest
 
 from tinyprove import NAT_MODULE, def_module, get_usual_axioms, parse
-from tinyprove.core import EmptyEnv, check, conv, infer, quote, term_eval
+from tinyprove.defs import force_axiom
+from tinyprove.core import EmptyEnv, check, conv, infer, quote, term_eval, TSort, TVar, TConst, TApp, TPi
 
 
 # The arithmetic proofs use primitive addition; multiplication is defined
@@ -639,6 +640,88 @@ class KernelTests(unittest.TestCase):
                 actual = term_eval(original, EmptyEnv())
                 self.assertTrue(conv(actual, term_eval(expected_term, EmptyEnv())))
                 check(quote(actual), expected_type, EmptyEnv())
+    
+    def test_axioms(self):
+        base = get_usual_axioms()
+        axioms_module = def_module("", imports=[("", base)])
+        # add the axioms to the axioms module
+        comptrue_ty = term_eval(TSort(0), EmptyEnv())
+        force_axiom("Comp⊤", comptrue_ty, axioms_module)
+        comp_cases_ty = term_eval(
+          TPi("A", TSort(0),
+            TApp(TApp(
+              TConst(axioms_module, ("|",)), TVar(0)),
+              TPi("a", TVar(0), TConst(axioms_module, ("Comp⊤",))))),
+          EmptyEnv()
+        )
+        force_axiom("comp_cases", comp_cases_ty, axioms_module)
+        test_module = def_module("""
+          # basic definitions (pull axioms from the import)
+          Comp⊤ = axioms.Comp⊤,
+          comp_cases = axioms.comp_cases,
+          Comp: Π A: Type0 => Type0 = λ A -> Π a: A => Comp⊤,
+          
+          comp⊥: Comp ⊥ =
+            |.ind0 ⊥ (Comp ⊥)
+            (λ inst -> Comp ⊥) # motive
+            (λ l -> (⊥.ind0
+              (λ inst -> Comp ⊥) # motive
+              l))
+            (λ r -> r)
+            (comp_cases ⊥),
+                  
+          contravariance:
+            Π A: Type0 => Π B: Type0 =>
+            Π a_to_b: (Π _: A => B) => Π compB: Comp B => Comp A
+          =
+            λ A -> λ B -> λ a_to_b -> λ compB ->
+              λ a -> compB (a_to_b a),
+          
+          neg_to_comp:
+            Π A: Type0 => Π na: ¬ A => Comp A
+          =
+            λ A -> λ na ->
+              |.ind0 A (Comp A)
+              (λ inst -> Comp A) # motive
+              (λ l -> (⊥.ind0
+                (λ inst -> Comp A) # motive
+                (na l)))
+              (λ r -> r)
+              (comp_cases A),
+          
+          comp_contradiction:
+            Π A: Type0 => Π a_and_comp_a: (& A (Comp A)) => Comp⊤
+          =
+            λ A -> λ a_and_comp_a ->
+              &.ind0 A (Comp A)
+                (λ inst -> Comp⊤) # motive
+                (λ a -> λ comp_a -> comp_a a)
+                a_and_comp_a,
+          
+          # demorgan typical case
+          demorgan_comp_and:
+            Π A: Type0 => Π B: Type0 =>
+            Π _: Comp (& A B) => | (Comp A) (Comp B)
+          =
+            λ A -> λ B -> λ comp_ab ->
+              |.ind0 A (Comp A)
+                (λ inst -> | (Comp A) (Comp B)) # motive
+                (λ a -> |.ind0 B (Comp B)
+                  (λ inst -> | (Comp A) (Comp B)) # motive
+                  (λ b -> {
+                    ab = &in A B a b,
+                    comp⊤ = comp_ab ab,
+                    -> |inl (Comp A) (Comp B) (λ a -> comp⊤) # could also do |inr with B here
+                  })
+                  (λ r -> |inr (Comp A) (Comp B) r)
+                  (comp_cases B))
+                (λ r -> |inl (Comp A) (Comp B) r)
+                (comp_cases A),
+          
+          # this is here to exercise the quoting of axioms:
+          id_Comp_of = λ A: Type0 -> λ ca: Comp A -> ca,
+        """, imports=[("", base), ("axioms", axioms_module)])
+
 
 
 if __name__ == "__main__":
